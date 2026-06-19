@@ -1,5 +1,8 @@
-import { proposalEncoder, proposalDecoder, Proposal } from "../../src/proposal.js"
+import { proposalEncoder, proposalDecoder, Proposal, isSelfRemoveProposal } from "../../src/proposal.js"
 import { defaultProposalTypes } from "../../src/defaultProposalType.js"
+import { selfRemoveProposalType } from "../../src/selfRemove.js"
+import { decode } from "../../src/codec/tlsDecoder.js"
+import { encode } from "../../src/codec/tlsEncoder.js"
 import { ciphersuites } from "../../src/crypto/ciphersuite.js"
 import { protocolVersions } from "../../src/protocolVersion.js"
 import { defaultCredentialTypes } from "../../src/defaultCredentialType.js"
@@ -40,6 +43,10 @@ const dummyProposalRemove: Proposal = {
   remove: { removed: 42 },
 }
 
+const dummyProposalSelfRemove: Proposal = {
+  proposalType: selfRemoveProposalType,
+}
+
 describe("Proposal roundtrip", () => {
   const roundtrip = createRoundtripTest(proposalEncoder, proposalDecoder)
 
@@ -49,5 +56,21 @@ describe("Proposal roundtrip", () => {
 
   test("roundtrips remove", () => {
     roundtrip(dummyProposalRemove)
+  })
+
+  test("roundtrips self_remove", () => {
+    roundtrip(dummyProposalSelfRemove)
+  })
+
+  test("self_remove encodes to exactly the 2-byte proposal type (empty body)", () => {
+    const bytes = encode(proposalEncoder, dummyProposalSelfRemove)
+    // 0x000a, big-endian uint16, no trailing body bytes.
+    expect(Array.from(bytes)).toEqual([0x00, 0x0a])
+  })
+
+  test("self_remove decodes from exactly the 2-byte type to a typed self_remove proposal", () => {
+    const decoded = decode(proposalDecoder, new Uint8Array([0x00, 0x0a]))
+    expect(decoded).toBeDefined()
+    expect(isSelfRemoveProposal(decoded!)).toBe(true)
   })
 })

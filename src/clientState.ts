@@ -56,6 +56,7 @@ import { ProposalOrRef, proposalOrRefTypes } from "./proposalOrRefType.js"
 import {
   isAppDataUpdateProposal,
   isDefaultProposal,
+  isSelfRemoveProposal,
   Proposal,
   ProposalAdd,
   ProposalExternalInit,
@@ -747,6 +748,46 @@ function extractAppDataUpdates(allProposals: ProposalWithSender[]): AppDataUpdat
   return allProposals.flatMap(({ proposal }) => (isAppDataUpdateProposal(proposal) ? [proposal.appDataUpdate] : []))
 }
 
+// The leaf indices removed by self_remove proposals: the leaving member is the
+// proposal's MLS sender (the body is empty). Validated by validateSelfRemoveProposals.
+function extractSelfRemoveLeafIndices(allProposals: ProposalWithSender[]): number[] {
+  return allProposals.flatMap(({ proposal, senderLeafIndex }) =>
+    isSelfRemoveProposal(proposal) && senderLeafIndex !== undefined ? [senderLeafIndex] : [],
+  )
+}
+
+function validateSelfRemoveProposals(
+  allProposals: ProposalWithSender[],
+  committerLeafIndex: number | undefined,
+  grouped: Proposals,
+  tree: RatchetTree,
+): MlsError | undefined {
+  const seen = new Set<number>()
+  for (const { proposal, senderLeafIndex } of allProposals) {
+    if (!isSelfRemoveProposal(proposal)) continue
+
+    // The leaver is the proposal's sender. A by-value (inline) self_remove
+    // inherits the committer's leaf index, which both loses the true sender and
+    // means the committer would remove their own leaf (RFC 9420 §12.2). So a
+    // self_remove must arrive by reference from another member.
+    if (senderLeafIndex === undefined || senderLeafIndex === committerLeafIndex)
+      return new ValidationError("self_remove proposal must be committed by reference by another member")
+
+    if (tree[leafToNodeIndex(toLeafIndex(senderLeafIndex))] === undefined)
+      return new ValidationError("self_remove proposal targets an empty leaf node")
+
+    if (seen.has(senderLeafIndex))
+      return new ValidationError("Commit cannot contain multiple self_remove proposals for the same leaf")
+    seen.add(senderLeafIndex)
+
+    if (
+      grouped[defaultProposalTypes.remove].some((r) => r.proposal.remove.removed === senderLeafIndex) ||
+      grouped[defaultProposalTypes.update].some((u) => u.senderLeafIndex === senderLeafIndex)
+    )
+      return new ValidationError("Commit cannot contain a self_remove and a remove/update for the same leaf")
+  }
+}
+
 function validateAppDataUpdateProposals(
   allProposals: ProposalWithSender[],
   gceExtensions: GroupContextExtension[] | undefined,
@@ -891,6 +932,10 @@ export async function applyProposals(
 
     throwIfDefined(validateAppDataUpdateProposals(allProposals, newExtensions, state.groupContext.extensions))
 
+    throwIfDefined(validateSelfRemoveProposals(allProposals, committerLeafIndex, grouped, mutableTree))
+
+    const selfRemoveLeafIndices = extractSelfRemoveLeafIndices(allProposals)
+
     const appDataUpdates = extractAppDataUpdates(allProposals)
 
     const updatedExtensions =
@@ -910,6 +955,7 @@ export async function applyProposals(
       authService,
       clientConfig.lifetimeConfig,
       cs.signature,
+      selfRemoveLeafIndices,
     )
 
     const [updatedPskSecret, pskIds] = await accumulatePskSecret(
@@ -937,9 +983,10 @@ export async function applyProposals(
       ...grouped[defaultProposalTypes.update].map(({ senderLeafIndex }) => toLeafIndex(senderLeafIndex!)),
       ...addedLeafNodes.map(([leafIndex]) => leafIndex),
     ]
-    const removedLeaves: LeafIndex[] = grouped[defaultProposalTypes.remove].map(({ proposal }) =>
-      toLeafIndex(proposal.remove.removed),
-    )
+    const removedLeaves: LeafIndex[] = [
+      ...grouped[defaultProposalTypes.remove].map(({ proposal }) => toLeafIndex(proposal.remove.removed)),
+      ...selfRemoveLeafIndices.map((i) => toLeafIndex(i)),
+    ]
 
     return {
       pskSecret: updatedPskSecret,
@@ -1343,6 +1390,7 @@ async function applyTreeMutations(
   authService: AuthenticationService,
   lifetimeConfig: LifetimeConfig,
   s: Signature,
+  selfRemoveLeafIndices: number[] = [],
 ): Promise<[LeafIndex, KeyPackage][]> {
   for (const { senderLeafIndex, proposal } of grouped[defaultProposalTypes.update]) {
     if (senderLeafIndex === undefined) throw new InternalError("No sender index found for update proposal")
@@ -1360,6 +1408,12 @@ async function applyTreeMutations(
 
     removeLeafNodeMutable(mutableTree, toLeafIndex(proposal.remove.removed))
   })
+
+  // self_remove blanks the leaving member's own leaf (sender), like a remove but
+  // proposed by the leaver and committed by another member. Validated upstream.
+  for (const leafIndex of selfRemoveLeafIndices) {
+    removeLeafNodeMutable(mutableTree, toLeafIndex(leafIndex))
+  }
 
   const addedLNs = new Array<[LeafIndex, KeyPackage]>(grouped[defaultProposalTypes.add].length)
 

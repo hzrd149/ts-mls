@@ -13,14 +13,18 @@ export {
   type ProposalPSK,
   type ProposalReinit,
   type ProposalRemove,
+  type ProposalSelfRemove,
   type ProposalUpdate,
   type Reinit,
   type Remove,
   type Update,
   isDefaultProposal,
   isAppDataUpdateProposal,
+  isSelfRemoveProposal,
   isCustomProposal,
 } from "./proposal.js"
+
+export { selfRemoveProposalType } from "./selfRemove.js"
 
 export {
   appDataDictionaryExtensionType,
@@ -85,6 +89,7 @@ export {
   createApplicationMessage,
   createProposal,
   createUpdateProposal,
+  createSelfRemoveProposal,
   type CreateMessageResult,
   type CreateUpdateProposalResult,
 } from "./createMessage.js"

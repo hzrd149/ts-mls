@@ -1,5 +1,5 @@
 import { uint16Decoder, uint32Decoder, uint16Encoder, uint32Encoder } from "./codec/number.js"
-import { Decoder, flatMapDecoder, mapDecoder, mapDecoders, orDecoder } from "./codec/tlsDecoder.js"
+import { Decoder, flatMapDecoder, mapDecoder, mapDecoders, orDecoder, succeedDecoder } from "./codec/tlsDecoder.js"
 import { contramapBufferEncoder, contramapBufferEncoders, Encoder } from "./codec/tlsEncoder.js"
 import { varLenDataDecoder, varLenTypeDecoder, varLenDataEncoder, varLenTypeEncoder } from "./codec/variableLength.js"
 import { extensionEncoder, GroupContextExtension, groupContextExtensionDecoder } from "./extension.js"
@@ -19,6 +19,7 @@ import {
   appDataUpdateEncoder,
   appDataUpdateProposalType,
 } from "./appDataUpdate.js"
+import { selfRemoveProposalType } from "./selfRemove.js"
 import { UsageError } from "./mlsError.js"
 
 /** @public */
@@ -147,6 +148,17 @@ export interface ProposalAppDataUpdate {
   appDataUpdate: AppDataUpdate
 }
 
+/**
+ * The `self_remove` proposal defined in draft-ietf-mls-extensions. The body is
+ * empty — the leaving member is the proposal's MLS sender — so it MUST be
+ * committed by reference (preserving the sender) by another member.
+ *
+ * @public
+ */
+export interface ProposalSelfRemove {
+  proposalType: typeof selfRemoveProposalType
+}
+
 /** @public */
 export interface ProposalCustom {
   proposalType: number
@@ -164,7 +176,7 @@ export type DefaultProposal =
   | ProposalGroupContextExtensions
 
 /** @public */
-export type Proposal = DefaultProposal | ProposalAppDataUpdate | ProposalCustom
+export type Proposal = DefaultProposal | ProposalAppDataUpdate | ProposalSelfRemove | ProposalCustom
 
 /** @public */
 export function isDefaultProposal(p: Proposal): p is DefaultProposal {
@@ -177,8 +189,13 @@ export function isAppDataUpdateProposal(p: Proposal): p is ProposalAppDataUpdate
 }
 
 /** @public */
+export function isSelfRemoveProposal(p: Proposal): p is ProposalSelfRemove {
+  return p.proposalType === selfRemoveProposalType && !("proposalData" in p)
+}
+
+/** @public */
 export function isCustomProposal(p: Proposal): p is ProposalCustom {
-  return !isDefaultProposal(p) && !isAppDataUpdateProposal(p)
+  return !isDefaultProposal(p) && !isAppDataUpdateProposal(p) && !isSelfRemoveProposal(p)
 }
 
 const proposalAddEncoder: Encoder<ProposalAdd> = contramapBufferEncoders(
@@ -226,10 +243,17 @@ const proposalCustomEncoder: Encoder<ProposalCustom> = contramapBufferEncoders(
   (p) => [p.proposalType, p.proposalData] as const,
 )
 
+// self_remove has an empty body: just the proposal type, no length-prefixed data.
+const proposalSelfRemoveEncoder: Encoder<ProposalSelfRemove> = contramapBufferEncoder(
+  uint16Encoder,
+  (p) => p.proposalType,
+)
+
 export const proposalEncoder: Encoder<Proposal> = (p) => {
   if (isAppDataUpdateProposal(p)) return proposalAppDataUpdateEncoder(p)
 
   if (!isDefaultProposal(p)) {
+    if (isSelfRemoveProposal(p)) return proposalSelfRemoveEncoder(p)
     if (p.proposalType === appDataUpdateProposalType)
       throw new UsageError("Cannot encode custom proposal with the app_data_update proposal type")
     return proposalCustomEncoder(p)
@@ -303,6 +327,11 @@ function proposalCustomDecoder(proposalType: number): Decoder<ProposalCustom> {
   return mapDecoder(varLenDataDecoder, (proposalData) => ({ proposalType, proposalData }))
 }
 
+// self_remove has an empty body, so it decodes from zero further bytes.
+const proposalSelfRemoveDecoder: Decoder<ProposalSelfRemove> = succeedDecoder({
+  proposalType: selfRemoveProposalType,
+})
+
 export const proposalDecoder: Decoder<Proposal> = orDecoder(
   flatMapDecoder(decodeDefaultProposalTypeValue, (proposalType): Decoder<Proposal> => {
     switch (proposalType) {
@@ -324,6 +353,7 @@ export const proposalDecoder: Decoder<Proposal> = orDecoder(
   }),
   flatMapDecoder(uint16Decoder, (n): Decoder<Proposal> => {
     if (n === appDataUpdateProposalType) return proposalAppDataUpdateDecoder
+    if (n === selfRemoveProposalType) return proposalSelfRemoveDecoder
     return proposalCustomDecoder(n)
   }),
 )
