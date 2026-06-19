@@ -64,7 +64,7 @@ import { createUpdatePath, PathSecret, firstCommonAncestor, UpdatePath, firstMat
 import { base64ToBytes, zeroOutUint8Array } from "./util/byteArray.js"
 import { Welcome, encryptGroupInfo, EncryptedGroupSecrets, encryptGroupSecrets } from "./welcome.js"
 import { CryptoVerificationError, InternalError, UsageError, ValidationError } from "./mlsError.js"
-import { ClientConfig, defaultClientConfig } from "./clientConfig.js"
+import { ClientConfig, resolveClientConfig } from "./clientConfig.js"
 import { ExtensionExternalPub, extensionsSupportedByCapabilities, GroupInfoExtension } from "./extension.js"
 import { encode } from "./codec/tlsEncoder.js"
 import { wireformats } from "./wireformat.js"
@@ -99,7 +99,7 @@ export async function createCommitInternal(
   const { context, state, resumingFromState: pskState, ...options } = params
   const { cipherSuite } = context
   const pskIndex = makePskIndex(pskState ?? state, context.externalPsks ?? {})
-  const clientConfig = context.clientConfig ?? defaultClientConfig
+  const clientConfig = resolveClientConfig(context.clientConfig)
   const {
     wireAsPublicMessage = false,
     extraProposals = [],
@@ -556,7 +556,7 @@ export async function joinGroupExternal(params: {
 
   const authService = context.authService
   const cs = context.cipherSuite
-  const clientConfig = context.clientConfig ?? defaultClientConfig
+  const clientConfig = resolveClientConfig(context.clientConfig)
 
   const tree = params.tree
   const authenticatedData = params.authenticatedData ?? new Uint8Array()

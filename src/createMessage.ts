@@ -7,11 +7,12 @@ import { protectProposal, protectApplicationData } from "./messageProtection.js"
 import { protectProposalPublic } from "./messageProtectionPublic.js"
 import { Proposal } from "./proposal.js"
 import { defaultProposalTypes } from "./defaultProposalType.js"
+import { selfRemoveProposalType } from "./selfRemove.js"
 import { addUnappliedProposal } from "./unappliedProposals.js"
 import { protocolVersions } from "./protocolVersion.js"
 import { wireformats } from "./wireformat.js"
 import type { MlsContext } from "./mlsContext.js"
-import { defaultClientConfig } from "./clientConfig.js"
+import { resolveClientConfig } from "./clientConfig.js"
 import { InternalError } from "./mlsError.js"
 
 /** @public */
@@ -33,7 +34,7 @@ export async function createProposal(params: {
   const state = params.state
   const cs = context.cipherSuite
   const ad = params.authenticatedData ?? new Uint8Array()
-  const clientConfig = context.clientConfig ?? defaultClientConfig
+  const clientConfig = resolveClientConfig(context.clientConfig)
 
   const publicMessage = params.wireAsPublicMessage ?? false
   const proposal = params.proposal
@@ -103,6 +104,29 @@ export async function createProposal(params: {
   }
 }
 
+/**
+ * Creates a `self_remove` proposal: the caller proposes their own removal for
+ * another member to commit. Framed as a PublicMessage (draft-ietf-mls-extensions
+ * / MIP-03) so the leaving member is the recorded MLS sender and the proposal can
+ * be committed by reference. The committer cannot be the sender (RFC 9420 §12.2),
+ * so this proposal advances no epoch on its own.
+ *
+ * @public
+ */
+export async function createSelfRemoveProposal(params: {
+  context: MlsContext
+  state: ClientState
+  authenticatedData?: Uint8Array
+}): Promise<CreateMessageResult> {
+  return createProposal({
+    context: params.context,
+    state: params.state,
+    wireAsPublicMessage: true,
+    proposal: { proposalType: selfRemoveProposalType },
+    authenticatedData: params.authenticatedData,
+  })
+}
+
 /** @public */
 export interface CreateUpdateProposalResult extends CreateMessageResult {
   /**
@@ -170,7 +194,7 @@ export async function createApplicationMessage(params: {
   const state = params.state
   const cs = context.cipherSuite
   const ad = params.authenticatedData ?? new Uint8Array()
-  const clientConfig = context.clientConfig ?? defaultClientConfig
+  const clientConfig = resolveClientConfig(context.clientConfig)
 
   const message = params.message
 

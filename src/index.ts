@@ -6,18 +6,42 @@ export {
   type DefaultProposal,
   type Proposal,
   type ProposalAdd,
+  type ProposalAppDataUpdate,
   type ProposalCustom,
   type ProposalExternalInit,
   type ProposalGroupContextExtensions,
   type ProposalPSK,
   type ProposalReinit,
   type ProposalRemove,
+  type ProposalSelfRemove,
   type ProposalUpdate,
   type Reinit,
   type Remove,
   type Update,
   isDefaultProposal,
+  isAppDataUpdateProposal,
+  isSelfRemoveProposal,
+  isCustomProposal,
 } from "./proposal.js"
+
+export { selfRemoveProposalType } from "./selfRemove.js"
+
+export {
+  appDataDictionaryExtensionType,
+  makeAppDataDictionaryExtension,
+  getAppDataDictionary,
+  type AppDataDictionary,
+  type ComponentData,
+} from "./appDataDictionary.js"
+
+export {
+  appDataUpdateProposalType,
+  appDataUpdateOperations,
+  defaultAppDataUpdateCallback,
+  type AppDataUpdate,
+  type AppDataUpdateCallback,
+  type AppDataUpdateOperationName,
+} from "./appDataUpdate.js"
 
 export {
   createGroup,
@@ -65,6 +89,7 @@ export {
   createApplicationMessage,
   createProposal,
   createUpdateProposal,
+  createSelfRemoveProposal,
   type CreateMessageResult,
   type CreateUpdateProposalResult,
 } from "./createMessage.js"

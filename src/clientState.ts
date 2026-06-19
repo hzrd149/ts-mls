@@ -54,7 +54,9 @@ import {
 import { WireformatName, wireformats } from "./wireformat.js"
 import { ProposalOrRef, proposalOrRefTypes } from "./proposalOrRefType.js"
 import {
+  isAppDataUpdateProposal,
   isDefaultProposal,
+  isSelfRemoveProposal,
   Proposal,
   ProposalAdd,
   ProposalExternalInit,
@@ -66,6 +68,8 @@ import {
   Reinit,
   Remove,
 } from "./proposal.js"
+import { AppDataUpdate, applyAppDataUpdates, appDataUpdateProposalType } from "./appDataUpdate.js"
+import { appDataDictionaryExtensionType } from "./appDataDictionary.js"
 import { defaultProposalTypes } from "./defaultProposalType.js"
 import { defaultExtensionTypes } from "./defaultExtensionType.js"
 import { pathToRoot } from "./pathSecrets.js"
@@ -116,7 +120,7 @@ import { decryptGroupInfo, decryptGroupSecrets, Welcome } from "./welcome.js"
 import { AuthenticationService } from "./authenticationService.js"
 import { LifetimeConfig } from "./lifetimeConfig.js"
 import { KeyPackageEqualityConfig } from "./keyPackageEqualityConfig.js"
-import { ClientConfig, defaultClientConfig } from "./clientConfig.js"
+import { ClientConfig, resolveClientConfig } from "./clientConfig.js"
 import { Encoder, contramapBufferEncoders, encode } from "./codec/tlsEncoder.js"
 
 import {
@@ -740,6 +744,102 @@ function validateRemove(remove: Remove, tree: RatchetTree): MlsError | undefined
     return new ValidationError("Tried to remove empty leaf node")
 }
 
+function extractAppDataUpdates(allProposals: ProposalWithSender[]): AppDataUpdate[] {
+  return allProposals.flatMap(({ proposal }) => (isAppDataUpdateProposal(proposal) ? [proposal.appDataUpdate] : []))
+}
+
+// The leaf indices removed by self_remove proposals: the leaving member is the
+// proposal's MLS sender (the body is empty). Validated by validateSelfRemoveProposals.
+function extractSelfRemoveLeafIndices(allProposals: ProposalWithSender[]): number[] {
+  return allProposals.flatMap(({ proposal, senderLeafIndex }) =>
+    isSelfRemoveProposal(proposal) && senderLeafIndex !== undefined ? [senderLeafIndex] : [],
+  )
+}
+
+function validateSelfRemoveProposals(
+  allProposals: ProposalWithSender[],
+  committerLeafIndex: number | undefined,
+  grouped: Proposals,
+  tree: RatchetTree,
+): MlsError | undefined {
+  const seen = new Set<number>()
+  for (const { proposal, senderLeafIndex } of allProposals) {
+    if (!isSelfRemoveProposal(proposal)) continue
+
+    // The leaver is the proposal's sender. A by-value (inline) self_remove
+    // inherits the committer's leaf index, which both loses the true sender and
+    // means the committer would remove their own leaf (RFC 9420 §12.2). So a
+    // self_remove must arrive by reference from another member.
+    if (senderLeafIndex === undefined || senderLeafIndex === committerLeafIndex)
+      return new ValidationError("self_remove proposal must be committed by reference by another member")
+
+    if (tree[leafToNodeIndex(toLeafIndex(senderLeafIndex))] === undefined)
+      return new ValidationError("self_remove proposal targets an empty leaf node")
+
+    if (seen.has(senderLeafIndex))
+      return new ValidationError("Commit cannot contain multiple self_remove proposals for the same leaf")
+    seen.add(senderLeafIndex)
+
+    if (
+      grouped[defaultProposalTypes.remove].some((r) => r.proposal.remove.removed === senderLeafIndex) ||
+      grouped[defaultProposalTypes.update].some((u) => u.senderLeafIndex === senderLeafIndex)
+    )
+      return new ValidationError("Commit cannot contain a self_remove and a remove/update for the same leaf")
+  }
+}
+
+function validateAppDataUpdateProposals(
+  allProposals: ProposalWithSender[],
+  gceExtensions: GroupContextExtension[] | undefined,
+  currentExtensions: GroupContextExtension[],
+): ValidationError | undefined {
+  const proposalTypes = allProposals.map(({ proposal }) => proposal.proposalType)
+  const firstAppDataUpdate = proposalTypes.indexOf(appDataUpdateProposalType)
+
+  // AppDataUpdate proposals are processed after all other proposals, so they must
+  // appear after a GroupContextExtensions proposal in the proposal list
+  if (firstAppDataUpdate !== -1) {
+    const lastGroupContextExtensions = proposalTypes.lastIndexOf(defaultProposalTypes.group_context_extensions)
+    if (lastGroupContextExtensions > firstAppDataUpdate)
+      return new ValidationError("AppDataUpdate proposals must appear after a GroupContextExtensions proposal")
+  }
+
+  // When required_capabilities includes the AppDataUpdate proposal type, a
+  // GroupContextExtensions proposal must not add, remove, or modify the
+  // app_data_dictionary extension. The dictionary is protected when either the
+  // current group context or the proposed extensions require the AppDataUpdate
+  // proposal type, so the protection cannot be bypassed by simultaneously
+  // dropping the capability and modifying the dictionary
+  if (gceExtensions !== undefined) {
+    const requiresAppDataUpdate = (extensions: GroupContextExtension[]) =>
+      extensions
+        .find(
+          (e): e is ExtensionRequiredCapabilities => e.extensionType === defaultExtensionTypes.required_capabilities,
+        )
+        ?.extensionData.proposalTypes.includes(appDataUpdateProposalType) === true
+
+    if (requiresAppDataUpdate(currentExtensions) || requiresAppDataUpdate(gceExtensions)) {
+      const currentDictionary = currentExtensions.find(
+        (e) => e.extensionType === appDataDictionaryExtensionType,
+      )?.extensionData
+      const proposedDictionary = gceExtensions.find(
+        (e) => e.extensionType === appDataDictionaryExtensionType,
+      )?.extensionData
+
+      const dictionaryUnchanged =
+        currentDictionary === undefined
+          ? proposedDictionary === undefined
+          : proposedDictionary !== undefined &&
+            constantTimeEqual(currentDictionary as Uint8Array, proposedDictionary as Uint8Array)
+
+      if (!dictionaryUnchanged)
+        return new ValidationError(
+          "GroupContextExtensions proposal cannot modify the app_data_dictionary extension when required capabilities include the AppDataUpdate proposal type",
+        )
+    }
+  }
+}
+
 export interface ApplyProposalsResult {
   pskSecret: Uint8Array
   pskIds: PskId[]
@@ -753,7 +853,12 @@ export interface ApplyProposalsResult {
 
 type ApplyProposalsData =
   | { kind: "memberCommit"; addedLeafNodes: [LeafIndex, KeyPackage][]; extensions: GroupContextExtension[] | undefined }
-  | { kind: "externalCommit"; externalInitSecret: Uint8Array; newMemberLeafIndex: LeafIndex }
+  | {
+      kind: "externalCommit"
+      externalInitSecret: Uint8Array
+      newMemberLeafIndex: LeafIndex
+      extensions: GroupContextExtension[] | undefined
+    }
   | { kind: "reinit"; reinit: Reinit }
 
 export async function applyProposals(
@@ -825,6 +930,23 @@ export async function applyProposals(
 
     const newExtensions = flattenExtensions(grouped[defaultProposalTypes.group_context_extensions])
 
+    throwIfDefined(validateAppDataUpdateProposals(allProposals, newExtensions, state.groupContext.extensions))
+
+    throwIfDefined(validateSelfRemoveProposals(allProposals, committerLeafIndex, grouped, mutableTree))
+
+    const selfRemoveLeafIndices = extractSelfRemoveLeafIndices(allProposals)
+
+    const appDataUpdates = extractAppDataUpdates(allProposals)
+
+    const updatedExtensions =
+      appDataUpdates.length > 0
+        ? applyAppDataUpdates(
+            newExtensions ?? state.groupContext.extensions,
+            appDataUpdates,
+            clientConfig.appDataUpdateCallback,
+          )
+        : newExtensions
+
     const addedLeafNodes = await applyTreeMutations(
       mutableTree,
       grouped,
@@ -833,6 +955,7 @@ export async function applyProposals(
       authService,
       clientConfig.lifetimeConfig,
       cs.signature,
+      selfRemoveLeafIndices,
     )
 
     const [updatedPskSecret, pskIds] = await accumulatePskSecret(
@@ -848,23 +971,29 @@ export async function applyProposals(
       allProposals.length === 0 ||
       allProposals.some(({ proposal }) => {
         const t = proposal.proposalType
-        return t !== defaultProposalTypes.add && t !== defaultProposalTypes.psk && t !== defaultProposalTypes.reinit
+        return (
+          t !== defaultProposalTypes.add &&
+          t !== defaultProposalTypes.psk &&
+          t !== defaultProposalTypes.reinit &&
+          t !== appDataUpdateProposalType
+        )
       })
 
     const updatedLeaves: LeafIndex[] = [
       ...grouped[defaultProposalTypes.update].map(({ senderLeafIndex }) => toLeafIndex(senderLeafIndex!)),
       ...addedLeafNodes.map(([leafIndex]) => leafIndex),
     ]
-    const removedLeaves: LeafIndex[] = grouped[defaultProposalTypes.remove].map(({ proposal }) =>
-      toLeafIndex(proposal.remove.removed),
-    )
+    const removedLeaves: LeafIndex[] = [
+      ...grouped[defaultProposalTypes.remove].map(({ proposal }) => toLeafIndex(proposal.remove.removed)),
+      ...selfRemoveLeafIndices.map((i) => toLeafIndex(i)),
+    ]
 
     return {
       pskSecret: updatedPskSecret,
       additionalResult: {
         kind: "memberCommit" as const,
         addedLeafNodes,
-        extensions: newExtensions,
+        extensions: updatedExtensions,
       },
       pskIds,
       needsUpdatePath,
@@ -875,6 +1004,15 @@ export async function applyProposals(
     }
   } else {
     throwIfDefined(validateExternalInit(grouped))
+
+    throwIfDefined(validateAppDataUpdateProposals(allProposals, undefined, state.groupContext.extensions))
+
+    const appDataUpdates = extractAppDataUpdates(allProposals)
+
+    const updatedExtensions =
+      appDataUpdates.length > 0
+        ? applyAppDataUpdates(state.groupContext.extensions, appDataUpdates, clientConfig.appDataUpdateCallback)
+        : undefined
 
     grouped[defaultProposalTypes.remove].forEach(({ proposal }) => {
       removeLeafNodeMutable(mutableTree, toLeafIndex(proposal.remove.removed))
@@ -911,6 +1049,7 @@ export async function applyProposals(
         kind: "externalCommit",
         externalInitSecret,
         newMemberLeafIndex: nodeToLeafIndex(findBlankLeafNodeIndexOrExtend(mutableTree)),
+        extensions: updatedExtensions,
       },
       selfRemoved: false,
       allProposals,
@@ -995,7 +1134,7 @@ export async function joinGroupInternal(params: {
   const pskSearch = makePskIndex(params.resumingFromState, context.externalPsks ?? {})
   const authService = context.authService
   const cs = context.cipherSuite
-  const clientConfig = context.clientConfig ?? defaultClientConfig
+  const clientConfig = resolveClientConfig(context.clientConfig)
 
   const ratchetTree = params.ratchetTree
   const resumingFromState = params.resumingFromState
@@ -1251,6 +1390,7 @@ async function applyTreeMutations(
   authService: AuthenticationService,
   lifetimeConfig: LifetimeConfig,
   s: Signature,
+  selfRemoveLeafIndices: number[] = [],
 ): Promise<[LeafIndex, KeyPackage][]> {
   for (const { senderLeafIndex, proposal } of grouped[defaultProposalTypes.update]) {
     if (senderLeafIndex === undefined) throw new InternalError("No sender index found for update proposal")
@@ -1268,6 +1408,12 @@ async function applyTreeMutations(
 
     removeLeafNodeMutable(mutableTree, toLeafIndex(proposal.remove.removed))
   })
+
+  // self_remove blanks the leaving member's own leaf (sender), like a remove but
+  // proposed by the leaver and committed by another member. Validated upstream.
+  for (const leafIndex of selfRemoveLeafIndices) {
+    removeLeafNodeMutable(mutableTree, toLeafIndex(leafIndex))
+  }
 
   const addedLNs = new Array<[LeafIndex, KeyPackage]>(grouped[defaultProposalTypes.add].length)
 
