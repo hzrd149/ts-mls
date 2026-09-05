@@ -156,7 +156,7 @@ export {
   bytesToArrayBuffer,
 } from "./util/byteArray.js"
 
-export { type GroupContext } from "./groupContext.js"
+export { groupContextEncoder, type GroupContext } from "./groupContext.js"
 
 export { type GroupInfo, type GroupInfoTBS } from "./groupInfo.js"
 
