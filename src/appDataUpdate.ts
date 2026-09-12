@@ -38,8 +38,7 @@ export type AppDataUpdateOperationName = keyof typeof appDataUpdateOperations
  * @public
  */
 export type AppDataUpdate =
-  | { componentId: number; operation: "update"; update: Uint8Array }
-  | { componentId: number; operation: "remove" }
+  { componentId: number; operation: "update"; update: Uint8Array } | { componentId: number; operation: "remove" }
 
 const appDataUpdateUpdateEncoder: Encoder<{ componentId: number; update: Uint8Array }> = contramapBufferEncoders(
   [uint16Encoder, uint8Encoder, varLenDataEncoder],

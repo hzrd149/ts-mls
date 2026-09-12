@@ -25,14 +25,13 @@ import {
   Credential,
   defaultCredentialTypes,
   generateKeyPackage,
-  defaultProposalTypes,
   getCiphersuiteImpl,
   createCommit,
   Proposal,
   joinGroup,
   joinGroupExternal,
-  processPrivateMessage,
-  processPublicMessage,
+  processMessage,
+  processKeyPackage,
   createGroupInfoWithExternalPubAndRatchetTree,
   unsafeTestingAuthenticationService,
   zeroOutUint8Array,
@@ -67,10 +66,7 @@ const charlieCredential: Credential = {
 const charlie = await generateKeyPackage({ credential: charlieCredential, cipherSuite: impl })
 
 // Alice adds Bob and commits, this is epoch 1
-const addBobProposal: Proposal = {
-  proposalType: defaultProposalTypes.add,
-  add: { keyPackage: bob.publicPackage },
-}
+const addBobProposal: Proposal = await processKeyPackage({ context, state: aliceGroup, keyPackage: bob.publicPackage })
 const addBobCommitResult = await createCommit({
   context,
   state: aliceGroup,
@@ -102,19 +98,19 @@ const charlieJoinGroupCommitResult = await joinGroupExternal({
 let charlieGroup = charlieJoinGroupCommitResult.newState
 
 // All members process the external join commit to update their state (epoch 2)
-const aliceProcessCharlieJoinResult = await processPublicMessage({
+const aliceProcessCharlieJoinResult = await processMessage({
   context,
   state: aliceGroup,
-  publicMessage: charlieJoinGroupCommitResult.publicMessage,
+  message: charlieJoinGroupCommitResult.commit,
 })
 
 aliceGroup = aliceProcessCharlieJoinResult.newState
 aliceProcessCharlieJoinResult.consumed.forEach(zeroOutUint8Array)
 
-const bobProcessCharlieJoinResult = await processPublicMessage({
+const bobProcessCharlieJoinResult = await processMessage({
   context,
   state: bobGroup,
-  publicMessage: charlieJoinGroupCommitResult.publicMessage,
+  message: charlieJoinGroupCommitResult.commit,
 })
 
 bobGroup = bobProcessCharlieJoinResult.newState

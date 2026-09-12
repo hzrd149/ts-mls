@@ -5,10 +5,14 @@ import {
   makePskIndex,
   nextEpochContext,
   processProposal,
+} from "./clientState.js"
+import {
+  NewLeafNodeWithSender,
   throwIfDefined,
+  validateKeyPackage,
   validateLeafNodeCredentialAndKeyUniqueness,
   validateLeafNodeUpdateOrCommit,
-} from "./clientState.js"
+} from "./validation.js"
 import { GroupActiveState } from "./groupActiveState.js"
 import { applyUpdatePathSecret } from "./createCommit.js"
 import { CiphersuiteImpl } from "./crypto/ciphersuite.js"
@@ -49,6 +53,14 @@ import { contentTypes } from "./contentType.js"
 import { AuthenticationService } from "./authenticationService.js"
 import type { MlsContext } from "./mlsContext.js"
 import { ClientConfig, resolveClientConfig } from "./clientConfig.js"
+import { defaultLifetimeConfig } from "./lifetimeConfig.js"
+import { KeyPackage } from "./keyPackage.js"
+import { ProposalAdd } from "./proposal.js"
+import { defaultProposalTypes } from "./defaultProposalType.js"
+import { defaultKeyPackageEqualityConfig } from "./keyPackageEqualityConfig.js"
+import { nodeTypes } from "./nodeType.js"
+import { findRequiredCapabilities } from "./extension.js"
+import { LeafNode } from "./leafNode.js"
 
 /** @public */
 export type ProcessMessageResult =
@@ -58,6 +70,7 @@ export type ProcessMessageResult =
       actionTaken: IncomingMessageAction
       consumed: Uint8Array[]
       aad: Uint8Array
+      senderLeafIndex: number | undefined
     }
   | {
       kind: "applicationMessage"
@@ -65,7 +78,7 @@ export type ProcessMessageResult =
       newState: ClientState
       consumed: Uint8Array[]
       aad: Uint8Array
-      senderLeafIndex: number | undefined
+      senderLeafIndex: number
     }
 
 /**
@@ -117,7 +130,7 @@ export async function processPrivateMessage(params: {
           newState,
           consumed: result.consumed,
           aad: result.content.content.authenticatedData,
-          senderLeafIndex: getSenderLeafNodeIndex(result.content.content.sender),
+          senderLeafIndex: result.senderLeafIndex,
         }
       } else {
         throw new ValidationError("Cannot process commit or proposal from former epoch")
@@ -146,7 +159,7 @@ export async function processPrivateMessage(params: {
       newState: updatedState,
       consumed: result.consumed,
       aad: result.content.content.authenticatedData,
-      senderLeafIndex: getSenderLeafNodeIndex(result.content.content.sender),
+      senderLeafIndex: result.senderLeafIndex,
     }
   } else if (result.content.content.contentType === contentTypes.commit) {
     if (result.content.auth.contentType !== result.content.content.contentType)
@@ -168,6 +181,7 @@ export async function processPrivateMessage(params: {
       actionTaken,
       consumed: [...result.consumed, ...consumed],
       aad: result.content.content.authenticatedData,
+      senderLeafIndex: result.senderLeafIndex,
     }
   } else {
     const action = cb({
@@ -184,6 +198,7 @@ export async function processPrivateMessage(params: {
         actionTaken: action,
         consumed: result.consumed,
         aad: result.content.content.authenticatedData,
+        senderLeafIndex: result.senderLeafIndex,
       }
     else
       return {
@@ -192,11 +207,16 @@ export async function processPrivateMessage(params: {
           updatedState,
           result.content,
           result.content.content.proposal,
-          cipherSuite.hash,
+          toLeafIndex(result.senderLeafIndex),
+          context.clientConfig?.lifetimeConfig ?? defaultLifetimeConfig,
+          context.clientConfig?.keyPackageEqualityConfig ?? defaultKeyPackageEqualityConfig,
+          context.authService,
+          cipherSuite,
         ),
         actionTaken: action,
         consumed: result.consumed,
         aad: result.content.content.authenticatedData,
+        senderLeafIndex: result.senderLeafIndex,
       }
   }
 }
@@ -207,6 +227,7 @@ export interface NewStateWithActionTaken {
   actionTaken: IncomingMessageAction
   consumed: Uint8Array[]
   aad: Uint8Array
+  sender: Sender
 }
 
 /** @public */
@@ -247,13 +268,24 @@ export async function processPublicMessage(params: {
         actionTaken: action,
         consumed: [],
         aad: content.content.authenticatedData,
+        sender: content.content.sender,
       }
     else
       return {
-        newState: await processProposal(state, content, content.content.proposal, cipherSuite.hash),
+        newState: await processProposal(
+          state,
+          content,
+          content.content.proposal,
+          getSenderLeafNodeIndex(content.content.sender),
+          context.clientConfig?.lifetimeConfig ?? defaultLifetimeConfig,
+          context.clientConfig?.keyPackageEqualityConfig ?? defaultKeyPackageEqualityConfig,
+          context.authService,
+          cipherSuite,
+        ),
         actionTaken: action,
         consumed: [],
         aad: content.content.authenticatedData,
+        sender: content.content.sender,
       }
   } else {
     if (content.auth.contentType !== content.content.contentType)
@@ -304,7 +336,13 @@ async function processCommit(
   const action = callback({ kind: "commit", senderLeafIndex, proposals: result.allProposals })
 
   if (action === "reject") {
-    return { newState: state, actionTaken: action, consumed: [], aad: content.authenticatedData }
+    return {
+      newState: state,
+      actionTaken: action,
+      consumed: [],
+      aad: content.authenticatedData,
+      sender: content.sender,
+    }
   }
 
   if (result.selfRemoved) {
@@ -318,8 +356,14 @@ async function processCommit(
       actionTaken: action,
       consumed: [],
       aad: content.authenticatedData,
+      sender: content.sender,
     }
   }
+
+  const updatedExtensions = result.additionalResult.kind === "reinit" ? undefined : result.additionalResult.extensions
+
+  const groupContextWithExtensions =
+    updatedExtensions !== undefined ? { ...state.groupContext, extensions: updatedExtensions } : state.groupContext
 
   if (content.commit.path !== undefined) {
     const committerLeafIndex =
@@ -329,26 +373,43 @@ async function processCommit(
     if (committerLeafIndex === undefined)
       throw new ValidationError("Cannot verify commit leaf node because no commiter leaf index found")
 
+    const oldLeafNode =
+      result.additionalResult.kind !== "externalCommit" ? getLeafNodeAt(committerLeafIndex, state) : undefined
+
+    const requiredCapabilities = findRequiredCapabilities(groupContextWithExtensions.extensions)
+
+    //TODO we could authenticate this along with any additions
     throwIfDefined(
       await validateLeafNodeUpdateOrCommit(
         content.commit.path.leafNode,
         committerLeafIndex,
+        requiredCapabilities,
+        oldLeafNode,
         state.groupContext,
         authService,
+        true,
         cs.signature,
       ),
     )
+
+    const withSender: NewLeafNodeWithSender = {
+      kind: "update",
+      leafNode: content.commit.path.leafNode,
+      senderLeafIndex: committerLeafIndex,
+      updatePath: content.commit.path.nodes,
+    }
+
     throwIfDefined(
-      await validateLeafNodeCredentialAndKeyUniqueness(mutableTree, content.commit.path.leafNode, committerLeafIndex),
+      await validateLeafNodeCredentialAndKeyUniqueness(
+        mutableTree,
+        [withSender],
+        clientConfig.keyPackageEqualityConfig,
+        requiredCapabilities,
+      ),
     )
   }
 
   if (result.needsUpdatePath && content.commit.path === undefined) throw new ValidationError("Update path is required")
-
-  const updatedExtensions = result.additionalResult.kind === "reinit" ? undefined : result.additionalResult.extensions
-
-  const groupContextWithExtensions =
-    updatedExtensions !== undefined ? { ...state.groupContext, extensions: updatedExtensions } : state.groupContext
 
   const proposalTouchedLeaves: LeafIndex[] = [...result.updatedLeaves, ...result.removedLeaves]
   const [pkp, commitSecret, newTreeHash, treeHashCache] = await applyTreeUpdate(
@@ -424,7 +485,15 @@ async function processCommit(
     actionTaken: action,
     consumed,
     aad: content.authenticatedData,
+    sender: content.sender,
   }
+}
+
+function getLeafNodeAt(committerLeafIndex: LeafIndex, state: ClientState): LeafNode {
+  const leafNodeIndex = leafToNodeIndex(committerLeafIndex)
+  const oldLeafNode = state.ratchetTree[leafNodeIndex]
+  if (oldLeafNode?.nodeType !== nodeTypes.leaf) throw new InternalError("Tried to update a non-leaf node")
+  return oldLeafNode.leaf
 }
 
 async function applyTreeUpdate(
@@ -540,7 +609,7 @@ export async function processMessage(params: {
       callback: action,
     })
 
-    return { ...result, kind: "newState" }
+    return { ...result, kind: "newState", senderLeafIndex: getSenderLeafNodeIndex(result.sender) }
   } else
     return processPrivateMessage({
       context: { cipherSuite: cs, authService, externalPsks, clientConfig },
@@ -548,4 +617,29 @@ export async function processMessage(params: {
       privateMessage: message.privateMessage,
       callback: action,
     })
+}
+
+/** @public */
+export async function processKeyPackage(params: {
+  context: MlsContext
+  state: ClientState
+  keyPackage: KeyPackage
+}): Promise<ProposalAdd> {
+  const requiredCapabilities = findRequiredCapabilities(params.state.groupContext.extensions)
+
+  throwIfDefined(
+    await validateKeyPackage(
+      params.keyPackage,
+      params.state.groupContext,
+      requiredCapabilities,
+      false,
+      params.context.clientConfig?.lifetimeConfig ?? defaultLifetimeConfig,
+      params.context.authService,
+      params.context.cipherSuite.signature,
+    ),
+  )
+  return {
+    proposalType: defaultProposalTypes.add,
+    add: { keyPackage: params.keyPackage },
+  }
 }

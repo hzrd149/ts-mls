@@ -25,14 +25,13 @@ import {
   Credential,
   defaultCredentialTypes,
   generateKeyPackage,
-  defaultProposalTypes,
   getCiphersuiteImpl,
   createCommit,
   Proposal,
   joinGroup,
-  processPrivateMessage,
   joinGroupFromBranch,
   branchGroup,
+  processKeyPackage,
   unsafeTestingAuthenticationService,
   zeroOutUint8Array,
 } from "ts-mls"
@@ -59,10 +58,7 @@ const bobCredential: Credential = {
 const bob = await generateKeyPackage({ credential: bobCredential, cipherSuite: impl })
 
 // Alice adds Bob
-const addBobProposal: Proposal = {
-  proposalType: defaultProposalTypes.add,
-  add: { keyPackage: bob.publicPackage },
-}
+const addBobProposal: Proposal = await processKeyPackage({ context, state: aliceGroup, keyPackage: bob.publicPackage })
 const addBobCommitResult = await createCommit({
   context,
   state: aliceGroup,

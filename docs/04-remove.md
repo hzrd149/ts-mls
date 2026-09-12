@@ -29,7 +29,8 @@ import {
   createCommit,
   Proposal,
   joinGroup,
-  processPrivateMessage,
+  processMessage,
+  processKeyPackage,
   unsafeTestingAuthenticationService,
   wireformats,
   zeroOutUint8Array,
@@ -59,10 +60,7 @@ const bobCredential: Credential = {
 const bob = await generateKeyPackage({ credential: bobCredential, cipherSuite: impl })
 
 // Alice adds Bob and commits, this is epoch 1
-const addBobProposal: Proposal = {
-  proposalType: defaultProposalTypes.add,
-  add: { keyPackage: bob.publicPackage },
-}
+const addBobProposal: Proposal = await processKeyPackage({ context, state: aliceGroup, keyPackage: bob.publicPackage })
 const addBobCommitResult = await createCommit({
   context,
   state: aliceGroup,
@@ -92,14 +90,12 @@ const removeBobCommitResult = await createCommit({
 })
 aliceGroup = removeBobCommitResult.newState
 removeBobCommitResult.consumed.forEach(zeroOutUint8Array)
-if (removeBobCommitResult.commit.wireformat !== wireformats.mls_private_message)
-  throw new Error("Expected private message")
 
 // Bob processes the removal and is removed from the group (epoch 2)
-const bobProcessRemoveResult = await processPrivateMessage({
+const bobProcessRemoveResult = await processMessage({
   context,
   state: bobGroup,
-  privateMessage: removeBobCommitResult.commit.privateMessage,
+  message: removeBobCommitResult.commit,
 })
 bobGroup = bobProcessRemoveResult.newState
 bobProcessRemoveResult.consumed.forEach(zeroOutUint8Array)

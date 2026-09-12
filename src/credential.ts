@@ -3,6 +3,7 @@ import { Decoder, flatMapDecoder, mapDecoder } from "./codec/tlsDecoder.js"
 import { contramapBufferEncoders, Encoder } from "./codec/tlsEncoder.js"
 import { varLenDataDecoder, varLenTypeDecoder, varLenDataEncoder, varLenTypeEncoder } from "./codec/variableLength.js"
 import { defaultCredentialTypes, isDefaultCredentialTypeValue } from "./defaultCredentialType.js"
+import { fastEqual } from "./util/byteArray.js"
 
 /** @public */
 export type Credential = DefaultCredential | CredentialCustom
@@ -48,6 +49,7 @@ const credentialCustomEncoder: Encoder<CredentialCustom> = contramapBufferEncode
   (c) => [c.credentialType, c.data] as const,
 )
 
+/** @public */
 export const credentialEncoder: Encoder<Credential> = (c) => {
   if (!isDefaultCredential(c)) return credentialCustomEncoder(c)
 
@@ -73,6 +75,7 @@ function credentialCustomDecoder(credentialType: number): Decoder<CredentialCust
   return mapDecoder(varLenDataDecoder, (data) => ({ credentialType, data }))
 }
 
+/** @public */
 export const credentialDecoder: Decoder<Credential> = flatMapDecoder(
   uint16Decoder,
   (credentialType): Decoder<Credential> => {
@@ -86,3 +89,27 @@ export const credentialDecoder: Decoder<Credential> = flatMapDecoder(
     }
   },
 )
+
+export function credentialEquals(a: Credential, b: Credential): boolean {
+  // eslint-disable-next-line no-object-comparison/object-equality
+  if (a === b) return true
+  if (a.credentialType !== b.credentialType) return false
+
+  if (isDefaultCredential(a)) {
+    switch (a.credentialType) {
+      case defaultCredentialTypes.basic:
+        return fastEqual(a.identity, (b as CredentialBasic).identity)
+
+      case defaultCredentialTypes.x509: {
+        const other = b as CredentialX509
+
+        return (
+          a.certificates.length === other.certificates.length &&
+          a.certificates.every((cert, i) => fastEqual(cert, other.certificates[i]!))
+        )
+      }
+    }
+  }
+
+  return fastEqual(a.data, (b as CredentialCustom).data)
+}

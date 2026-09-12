@@ -29,10 +29,10 @@ import {
   Credential,
   defaultCredentialTypes,
   generateKeyPackage,
-  defaultProposalTypes,
   getCiphersuiteImpl,
   joinGroup,
   processMessage,
+  processKeyPackage,
   createApplicationMessage,
   createCommit,
   Proposal,
@@ -62,11 +62,12 @@ const bobCredential: Credential = {
 }
 const bob = await generateKeyPackage({ credential: bobCredential, cipherSuite: impl })
 
-// Alice adds Bob
-const addBobProposal: Proposal = {
-  proposalType: defaultProposalTypes.add,
-  add: { keyPackage: bob.publicPackage },
-}
+// Alice adds Bob by processing his KeyPackage and commiting an Add Proposal
+const addBobProposal: Proposal = await processKeyPackage({
+  context,
+  state: aliceGroup,
+  keyPackage: bob.publicPackage,
+})
 const commitResult = await createCommit({
   context: { cipherSuite: impl, authService: unsafeTestingAuthenticationService },
   state: aliceGroup,
@@ -108,6 +109,14 @@ bobGroup = bobProcessMessageResult.newState
 
 // Bob deletes the keys used to decrypt the application message
 bobProcessMessageResult.consumed.forEach(zeroOutUint8Array)
+
+if (bobProcessMessageResult.kind !== "applicationMessage") throw new Error("Expected application message")
+
+//Bob can now read the message
+const receivedMessage = bobProcessMessageResult.message
+
+//Bob can also access the sender's leaf index
+const senderLeafIndex = bobProcessMessageResult.senderLeafIndex
 ```
 
 ---

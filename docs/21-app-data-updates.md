@@ -15,7 +15,7 @@ This scenario demonstrates the `app_data_dictionary` GroupContext extension and 
 - **AppDataDictionary**: A list of `ComponentData` entries, each associating opaque application data with a `componentId` (a `uint16`). Entries are sorted by componentId with at most one entry per componentId.
 - **AppDataUpdate Proposal**: Updates or removes a single component's entry. Because the proposal is applied while forming the new GroupContext, the updated dictionary is folded into the confirmed transcript, the key schedule, and the confirmation tag.
 - **Application Logic**: The update payloads are opaque to MLS. The `appDataUpdateCallback` in the `ClientConfig` decides how update payloads transform a component's data. The default treats each update as a full replacement (the last update for a component wins). All members must use the same logic to converge.
-- **Capabilities**: Members must advertise extension type `6` and proposal type `8` in their capabilities.
+- **Capabilities**: The draft does not require members to advertise these types, but members should advertise extension type `6` and proposal type `8` in their capabilities — and must do so if the group's `required_capabilities` lists them.
 
 ---
 

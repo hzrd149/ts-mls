@@ -5,6 +5,7 @@ import {
   extractFromGroupMembers,
   getGroupMembers,
   getOwnSignatureKeyPair,
+  getLeafNodeAt,
 } from "../src/clientState.js"
 import { generateKeyPackage } from "../src/keyPackage.js"
 import { ProposalAdd } from "../src/proposal.js"
@@ -12,12 +13,13 @@ import { Credential, isDefaultCredential } from "../src/credential.js"
 import { getCiphersuiteImpl } from "../src/crypto/getCiphersuiteImpl.js"
 import { CiphersuiteName } from "../src/crypto/ciphersuite.js"
 import { createCommit } from "../src/createCommit.js"
-import { processPrivateMessage } from "../src/processMessages.js"
 import { defaultProposalTypes } from "../src/defaultProposalType.js"
 import { defaultCredentialTypes } from "../src/defaultCredentialType.js"
 import { LeafNode } from "../src/leafNode.js"
 import { wireformats } from "../src/wireformat.js"
 import { unsafeTestingAuthenticationService } from "../src/authenticationService.js"
+import { processMessageEnsureNoMutation } from "./scenario/common.js"
+import { UsageError } from "../src/mlsError.js"
 
 const SUITE: CiphersuiteName = "MLS_128_DHKEMX25519_AES128GCM_SHA256_Ed25519"
 
@@ -89,13 +91,13 @@ async function buildThreeMemberGroup() {
   aliceGroup = addCharlieCommitResult.newState
   if (addCharlieCommitResult.commit.wireformat !== wireformats.mls_private_message)
     throw new Error("Expected private message")
-  const processAddCharlieResult = await processPrivateMessage({
+  const processAddCharlieResult = await processMessageEnsureNoMutation({
     context: {
       cipherSuite: impl,
       authService: unsafeTestingAuthenticationService,
     },
     state: bobGroup,
-    privateMessage: addCharlieCommitResult.commit.privateMessage,
+    message: addCharlieCommitResult.commit,
   })
   bobGroup = processAddCharlieResult.newState
   const charlieGroup = await joinGroup({
@@ -133,6 +135,34 @@ describe("clientState helpers", () => {
     expect(getOwnSignatureKeyPair(bobGroup).publicKey).toStrictEqual(bobLeaf.signaturePublicKey)
     expect(identityOf(charlieLeaf)).toBe("charlie")
     expect(getOwnSignatureKeyPair(charlieGroup).publicKey).toStrictEqual(charlieLeaf.signaturePublicKey)
+  })
+
+  test("getLeafNodeAt returns the correct member for each client", async () => {
+    const { aliceGroup, bobGroup, charlieGroup } = await buildThreeMemberGroup()
+
+    const alicePk = getOwnSignatureKeyPair(aliceGroup).publicKey
+    const bobPk = getOwnSignatureKeyPair(bobGroup).publicKey
+    const charliePk = getOwnSignatureKeyPair(charlieGroup).publicKey
+
+    expect(alicePk).toStrictEqual(getLeafNodeAt(aliceGroup, 0).signaturePublicKey)
+    expect(alicePk).toStrictEqual(getLeafNodeAt(bobGroup, 0).signaturePublicKey)
+    expect(alicePk).toStrictEqual(getLeafNodeAt(charlieGroup, 0).signaturePublicKey)
+
+    expect(bobPk).toStrictEqual(getLeafNodeAt(aliceGroup, 1).signaturePublicKey)
+    expect(bobPk).toStrictEqual(getLeafNodeAt(bobGroup, 1).signaturePublicKey)
+    expect(bobPk).toStrictEqual(getLeafNodeAt(charlieGroup, 1).signaturePublicKey)
+
+    expect(charliePk).toStrictEqual(getLeafNodeAt(aliceGroup, 2).signaturePublicKey)
+    expect(charliePk).toStrictEqual(getLeafNodeAt(bobGroup, 2).signaturePublicKey)
+    expect(charliePk).toStrictEqual(getLeafNodeAt(charlieGroup, 2).signaturePublicKey)
+  })
+
+  test("getLeafNodeAt should throw UsageError when out of bounds", async () => {
+    const { aliceGroup } = await buildThreeMemberGroup()
+
+    expect(() => {
+      getLeafNodeAt(aliceGroup, 3)
+    }).toThrow(new UsageError("No leaf at given leafIndex"))
   })
 
   test("extractFromGroupMembers maps identities and supports exclusion", async () => {

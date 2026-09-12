@@ -27,12 +27,12 @@ import {
   Credential,
   defaultCredentialTypes,
   createGroup,
-  defaultProposalTypes,
   joinGroup,
   joinGroupFromReinit,
-  processPrivateMessage,
+  processMessage,
   reinitCreateNewGroup,
   reinitGroup,
+  processKeyPackage,
   Proposal,
   getCiphersuiteImpl,
   generateKeyPackage,
@@ -65,10 +65,7 @@ const bobCredential: Credential = {
 const bob = await generateKeyPackage({ credential: bobCredential, cipherSuite: impl })
 
 // Alice adds Bob (epoch 1)
-const addBobProposal: Proposal = {
-  proposalType: defaultProposalTypes.add,
-  add: { keyPackage: bob.publicPackage },
-}
+const addBobProposal: Proposal = await processKeyPackage({ context, state: aliceGroup, keyPackage: bob.publicPackage })
 const commitResult = await createCommit({
   context,
   state: aliceGroup,
@@ -99,14 +96,11 @@ const reinitCommitResult = await reinitGroup({
 aliceGroup = reinitCommitResult.newState
 reinitCommitResult.consumed.forEach(zeroOutUint8Array)
 
-if (reinitCommitResult.commit.wireformat !== wireformats.mls_private_message)
-  throw new Error("Expected private message")
-
 // Bob processes the reinit commit and prepares to join the new group
-const processReinitResult = await processPrivateMessage({
+const processReinitResult = await processMessage({
   context,
   state: bobGroup,
-  privateMessage: reinitCommitResult.commit.privateMessage,
+  message: reinitCommitResult.commit,
 })
 bobGroup = processReinitResult.newState
 processReinitResult.consumed.forEach(zeroOutUint8Array)

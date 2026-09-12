@@ -1,4 +1,5 @@
-import { createGroup, validateRatchetTree } from "../../src/clientState.js"
+import { createGroup, joinGroup } from "../../src/clientState.js"
+import { validateRatchetTree } from "../../src/validation.js"
 import {
   generateKeyPackage as generateKeyPackageBase,
   generateKeyPackageWithKey as generateKeyPackageWithKeyBase,
@@ -6,11 +7,11 @@ import {
 import { Credential } from "../../src/credential.js"
 import { CiphersuiteImpl, CiphersuiteName, ciphersuites } from "../../src/crypto/ciphersuite.js"
 import { getCiphersuiteImpl } from "../../src/crypto/getCiphersuiteImpl.js"
-import { CryptoVerificationError, ValidationError } from "../../src/mlsError.js"
+import { CryptoVerificationError, UsageError, ValidationError } from "../../src/mlsError.js"
 import { ratchetTreeEncoder, RatchetTree, addLeafNodeMutable } from "../../src/ratchetTree.js"
 import { GroupContext } from "../../src/groupContext.js"
 import { defaultLifetimeConfig } from "../../src/lifetimeConfig.js"
-import { unsafeTestingAuthenticationService } from "../../src/authenticationService.js"
+import { AuthenticationService, unsafeTestingAuthenticationService } from "../../src/authenticationService.js"
 
 import { Proposal } from "../../src/proposal.js"
 import {
@@ -32,6 +33,11 @@ import { defaultCredentialTypes } from "../../src/defaultCredentialType.js"
 import { leafNodeSources } from "../../src/leafNodeSource.js"
 import { nodeTypes } from "../../src/nodeType.js"
 import { encode } from "../../src/codec/tlsEncoder.js"
+import { processKeyPackage, processMessage } from "../../src/processMessages.js"
+import { wireformats } from "../../src/wireformat.js"
+import { createContentCommitSignature } from "../../src/framedContent.js"
+import { protectPublicMessage } from "../../src/messageProtectionPublic.js"
+import { contentTypes } from "../../src/contentType.js"
 
 type CommitContext = MlsContext & { state: ClientState }
 
@@ -82,6 +88,10 @@ describe("Ratchet Tree Validation", () => {
     await testHpkePublicKeysNotUnique(cs as CiphersuiteName)
   })
 
+  test.concurrent.each(suites)("UpdatePath HPKE public keys cannot duplicate tree keys %s", async (cs) => {
+    await testUpdatePathHpkePublicKeyNotUnique(cs as CiphersuiteName)
+  })
+
   test.concurrent.each(suites)("signature key not unique %s", async (cs) => {
     await testSignatureKeyNotUnique(cs as CiphersuiteName)
   })
@@ -109,7 +119,103 @@ describe("Ratchet Tree Validation", () => {
   test.concurrent.each(suites)("invalid credential %s", async (cs) => {
     await testInvalidCredential(cs as CiphersuiteName)
   })
+
+  test.concurrent.each(suites)("Authentication Batching %s", async (cs) => {
+    await testAuthenticationBatching(cs as CiphersuiteName)
+  })
 })
+
+async function testAuthenticationBatching(cipherSuite: CiphersuiteName) {
+  const impl = await getCiphersuiteImpl(cipherSuite)
+  const alice = await generateDefaultKeyPackage(
+    { credentialType: defaultCredentialTypes.basic, identity: new TextEncoder().encode("alice") },
+    impl,
+  )
+  const bob = await generateDefaultKeyPackage(
+    { credentialType: defaultCredentialTypes.basic, identity: new TextEncoder().encode("bob") },
+    impl,
+  )
+
+  let aliceGroup = await createGroup({
+    context: { cipherSuite: impl, authService: unsafeTestingAuthenticationService },
+    groupId: new TextEncoder().encode("group1"),
+    keyPackage: alice.publicPackage,
+    privateKeyPackage: alice.privatePackage,
+  })
+
+  const addBobCommit = await createCommit(
+    {
+      state: aliceGroup,
+      cipherSuite: impl,
+      authService: unsafeTestingAuthenticationService,
+    },
+    {
+      extraProposals: [{ proposalType: defaultProposalTypes.add, add: { keyPackage: bob.publicPackage } }],
+    },
+  )
+  aliceGroup = addBobCommit.newState
+
+  const groupInfo = await createGroupInfoWithExternalPubAndRatchetTree(aliceGroup, [], impl)
+  const tree = ratchetTreeFromExtension(groupInfo)!
+  let individualCalls = 0
+  const batches: number[] = []
+
+  const batchedAuthService: AuthenticationService = {
+    async validateCredential() {
+      individualCalls++
+      return { kind: "ok" }
+    },
+    async validateSuccessorCredential() {
+      return { kind: "ok" }
+    },
+    async validateCredentialBatch(batch) {
+      batches.push(batch.length)
+      return { kind: "ok" }
+    },
+    batchSize: 1,
+    maxConcurrency: 2,
+  }
+
+  await expect(
+    validateRatchetTree(
+      tree,
+      groupInfo.groupContext,
+      defaultLifetimeConfig,
+      batchedAuthService,
+      groupInfo.groupContext.treeHash,
+      impl,
+    ),
+  ).resolves.toBeUndefined()
+  expect(individualCalls).toBe(0)
+  expect(batches).toEqual([1, 1])
+
+  const rejectedBatchAuthService: AuthenticationService = {
+    ...batchedAuthService,
+    async validateCredentialBatch() {
+      return { kind: "error", error: "unavailable" }
+    },
+  }
+
+  const err1 = await validateRatchetTree(
+    tree,
+    groupInfo.groupContext,
+    defaultLifetimeConfig,
+    rejectedBatchAuthService,
+    groupInfo.groupContext.treeHash,
+    impl,
+  )
+  expect(err1).toEqual(new ValidationError("Could not validate credentials: unavailable"))
+
+  const err2 = await validateRatchetTree(
+    tree,
+    groupInfo.groupContext,
+    defaultLifetimeConfig,
+    { ...batchedAuthService, maxConcurrency: 0 },
+    groupInfo.groupContext.treeHash,
+    impl,
+  )
+  expect(err2).toEqual(new UsageError("maxParallelism should not be less than 1"))
+}
 
 async function testStructuralIntegrity(cipherSuite: CiphersuiteName) {
   const impl = await getCiphersuiteImpl(cipherSuite)
@@ -360,6 +466,84 @@ async function testHpkePublicKeysNotUnique(cipherSuite: CiphersuiteName) {
   ).rejects.toThrow(new ValidationError("hpke keys not unique"))
 }
 
+async function testUpdatePathHpkePublicKeyNotUnique(cipherSuite: CiphersuiteName) {
+  const impl = await getCiphersuiteImpl(cipherSuite)
+  const context = { cipherSuite: impl, authService: unsafeTestingAuthenticationService }
+
+  const alice = await generateDefaultKeyPackage(
+    { credentialType: defaultCredentialTypes.basic, identity: new TextEncoder().encode("alice") },
+    impl,
+  )
+  const bob = await generateDefaultKeyPackage(
+    { credentialType: defaultCredentialTypes.basic, identity: new TextEncoder().encode("bob") },
+    impl,
+  )
+
+  let aliceGroup = await createGroup({
+    context,
+    groupId: new TextEncoder().encode("group1"),
+    keyPackage: alice.publicPackage,
+    privateKeyPackage: alice.privatePackage,
+  })
+
+  const addBobCommit = await createCommit(
+    { ...context, state: aliceGroup },
+    { extraProposals: [{ proposalType: defaultProposalTypes.add, add: { keyPackage: bob.publicPackage } }] },
+  )
+  aliceGroup = addBobCommit.newState
+
+  const bobGroup = await joinGroup({
+    context,
+    welcome: addBobCommit.welcome!.welcome,
+    keyPackage: bob.publicPackage,
+    privateKeys: bob.privatePackage,
+    ratchetTree: aliceGroup.ratchetTree,
+  })
+
+  const updateCommit = await createCommit(
+    { ...context, state: aliceGroup },
+    { leafNodePatch: {}, wireAsPublicMessage: true },
+  )
+
+  if (updateCommit.commit.wireformat !== wireformats.mls_public_message) throw new Error("expected a public commit")
+
+  const content = updateCommit.commit.publicMessage.content
+  if (content.contentType !== contentTypes.commit) throw new Error("expected commit content")
+
+  const updatePath = content.commit.path
+  if (updatePath === undefined || updatePath.nodes.length === 0) throw new Error("expected an UpdatePath")
+
+  updatePath.nodes[0]!.hpkePublicKey = bob.publicPackage.leafNode.hpkePublicKey
+
+  const { framedContent, signature } = await createContentCommitSignature(
+    aliceGroup.groupContext,
+    "mls_public_message",
+    content.commit,
+    content.sender,
+    content.authenticatedData,
+    aliceGroup.signaturePrivateKey,
+    impl.signature,
+  )
+  const publicMessage = await protectPublicMessage(
+    aliceGroup.keySchedule.membershipKey,
+    aliceGroup.groupContext,
+    {
+      wireformat: wireformats.mls_public_message,
+      content: framedContent,
+      auth: { ...updateCommit.commit.publicMessage.auth, signature },
+    },
+    impl,
+  )
+
+  await expect(
+    processMessage({
+      context,
+      state: bobGroup,
+      message: { ...updateCommit.commit, publicMessage },
+    }),
+  ).rejects.toThrow(new ValidationError("hpke keys not unique"))
+}
+
 async function testInvalidLeafNodeSignature(cipherSuite: CiphersuiteName) {
   const impl = await getCiphersuiteImpl(cipherSuite)
 
@@ -528,24 +712,15 @@ async function testInvalidKeyPackageSignature(cipherSuite: CiphersuiteName) {
   // create an add proposal with a tampered keypackage signature
   bob.publicPackage.signature[0] = (bob.publicPackage.signature[0]! + 1) & 0xff
 
-  const addBobProposal: Proposal = {
-    proposalType: defaultProposalTypes.add,
-    add: {
-      keyPackage: bob.publicPackage,
-    },
-  }
-
   await expect(
-    createCommit(
-      {
-        state: aliceGroup,
+    processKeyPackage({
+      context: {
         cipherSuite: impl,
         authService: unsafeTestingAuthenticationService,
       },
-      {
-        extraProposals: [addBobProposal],
-      },
-    ),
+      state: aliceGroup,
+      keyPackage: bob.publicPackage,
+    }),
   ).rejects.toThrow(new CryptoVerificationError("Invalid keypackage signature"))
 }
 
@@ -560,8 +735,10 @@ async function testInvalidCipherSuite(cipherSuite: CiphersuiteName) {
 
   const groupId = new TextEncoder().encode("group1")
 
-  const aliceGroup = await createGroup({
-    context: { cipherSuite: impl, authService: unsafeTestingAuthenticationService },
+  const context = { cipherSuite: impl, authService: unsafeTestingAuthenticationService }
+
+  let aliceGroup = await createGroup({
+    context,
     groupId,
     keyPackage: alice.publicPackage,
     privateKeyPackage: alice.privatePackage,
@@ -573,9 +750,6 @@ async function testInvalidCipherSuite(cipherSuite: CiphersuiteName) {
   }
   const bob = await generateDefaultKeyPackage(bobCredential, impl)
 
-  // tamper with the KeyPackage cipherSuite id to mismatch the group's cipher suite
-  bob.publicPackage.cipherSuite = 0xffff
-
   const addBobProposal: Proposal = {
     proposalType: defaultProposalTypes.add,
     add: {
@@ -583,18 +757,57 @@ async function testInvalidCipherSuite(cipherSuite: CiphersuiteName) {
     },
   }
 
-  await expect(
-    createCommit(
-      {
-        state: aliceGroup,
-        cipherSuite: impl,
-        authService: unsafeTestingAuthenticationService,
-      },
-      {
-        extraProposals: [addBobProposal],
-      },
-    ),
-  ).rejects.toThrow(new ValidationError("Invalid CipherSuite"))
+  const addBobCommitResult = await createCommit(
+    {
+      state: aliceGroup,
+      cipherSuite: impl,
+      authService: unsafeTestingAuthenticationService,
+    },
+    {
+      extraProposals: [addBobProposal],
+    },
+  )
+
+  aliceGroup = addBobCommitResult.newState
+
+  const bobGroup = await joinGroup({
+    context,
+    welcome: addBobCommitResult.welcome!.welcome,
+    keyPackage: bob.publicPackage,
+    privateKeys: bob.privatePackage,
+    ratchetTree: aliceGroup.ratchetTree,
+  })
+
+  const charlieCredential: Credential = {
+    credentialType: defaultCredentialTypes.basic,
+    identity: new TextEncoder().encode("charlie"),
+  }
+  const charlie = await generateDefaultKeyPackage(charlieCredential, impl)
+
+  const addCharlieProposal: Proposal = {
+    proposalType: defaultProposalTypes.add,
+    add: {
+      keyPackage: charlie.publicPackage,
+    },
+  }
+
+  // tamper with the KeyPackage cipherSuite id to mismatch the group's cipher suite
+  charlie.publicPackage.cipherSuite = 0xffff
+
+  const createInvalidCommit = await createCommit(
+    {
+      state: aliceGroup,
+      cipherSuite: impl,
+      authService: unsafeTestingAuthenticationService,
+    },
+    {
+      extraProposals: [addCharlieProposal],
+    },
+  )
+
+  await expect(processMessage({ context, state: bobGroup, message: createInvalidCommit.commit })).rejects.toThrow(
+    new ValidationError("Invalid CipherSuite"),
+  )
 }
 
 async function testInvalidMlsVersion(cipherSuite: CiphersuiteName) {
@@ -607,9 +820,10 @@ async function testInvalidMlsVersion(cipherSuite: CiphersuiteName) {
   const alice = await generateDefaultKeyPackage(aliceCredential, impl)
 
   const groupId = new TextEncoder().encode("group1")
+  const context = { cipherSuite: impl, authService: unsafeTestingAuthenticationService }
 
-  const aliceGroup = await createGroup({
-    context: { cipherSuite: impl, authService: unsafeTestingAuthenticationService },
+  let aliceGroup = await createGroup({
+    context,
     groupId,
     keyPackage: alice.publicPackage,
     privateKeyPackage: alice.privatePackage,
@@ -621,9 +835,6 @@ async function testInvalidMlsVersion(cipherSuite: CiphersuiteName) {
   }
   const bob = await generateDefaultKeyPackage(bobCredential, impl)
 
-  // tamper with the KeyPackage version id to mismatch the group's version
-  bob.publicPackage.version = 0xffff as ProtocolVersionValue
-
   const addBobProposal: Proposal = {
     proposalType: defaultProposalTypes.add,
     add: {
@@ -631,18 +842,57 @@ async function testInvalidMlsVersion(cipherSuite: CiphersuiteName) {
     },
   }
 
-  await expect(
-    createCommit(
-      {
-        state: aliceGroup,
-        cipherSuite: impl,
-        authService: unsafeTestingAuthenticationService,
-      },
-      {
-        extraProposals: [addBobProposal],
-      },
-    ),
-  ).rejects.toThrow(new ValidationError("Invalid mls version"))
+  const addBobCommitResult = await createCommit(
+    {
+      state: aliceGroup,
+      cipherSuite: impl,
+      authService: unsafeTestingAuthenticationService,
+    },
+    {
+      extraProposals: [addBobProposal],
+    },
+  )
+
+  aliceGroup = addBobCommitResult.newState
+
+  const bobGroup = await joinGroup({
+    context,
+    welcome: addBobCommitResult.welcome!.welcome,
+    keyPackage: bob.publicPackage,
+    privateKeys: bob.privatePackage,
+    ratchetTree: aliceGroup.ratchetTree,
+  })
+
+  const charlieCredential: Credential = {
+    credentialType: defaultCredentialTypes.basic,
+    identity: new TextEncoder().encode("charlie"),
+  }
+  const charlie = await generateDefaultKeyPackage(charlieCredential, impl)
+
+  const addCharlieProposal: Proposal = {
+    proposalType: defaultProposalTypes.add,
+    add: {
+      keyPackage: charlie.publicPackage,
+    },
+  }
+
+  // tamper with the KeyPackage version id to mismatch the group's version
+  charlie.publicPackage.version = 2 as ProtocolVersionValue
+
+  const createInvalidCommit = await createCommit(
+    {
+      state: aliceGroup,
+      cipherSuite: impl,
+      authService: unsafeTestingAuthenticationService,
+    },
+    {
+      extraProposals: [addCharlieProposal],
+    },
+  )
+
+  await expect(processMessage({ context, state: bobGroup, message: createInvalidCommit.commit })).rejects.toThrow(
+    new ValidationError("Invalid mls version"),
+  )
 }
 
 async function testInvalidCredential(cipherSuite: CiphersuiteName) {
@@ -702,10 +952,18 @@ async function testInvalidCredential(cipherSuite: CiphersuiteName) {
   const tree = ratchetTreeFromExtension(groupInfo)!
 
   // create an auth service that rejects all credentials
-  const badAuthService = {
-    async validateCredential(_c: Credential, _k: Uint8Array) {
-      return false
+  const badAuthService: AuthenticationService = {
+    async validateCredential(_c, _k) {
+      return { kind: "error", error: "error" }
     },
+    async validateSuccessorCredential(_oldCredential, _newCredential) {
+      return { kind: "error", error: "error" }
+    },
+    async validateCredentialBatch(_batch) {
+      return { kind: "error", error: "error" }
+    },
+    batchSize: 32,
+    maxConcurrency: 1,
   }
 
   const err = await validateRatchetTree(
@@ -718,7 +976,7 @@ async function testInvalidCredential(cipherSuite: CiphersuiteName) {
   )
 
   expect(err).toBeInstanceOf(ValidationError)
-  expect(err?.message).toBe("Could not validate credential")
+  expect(err?.message).toBe("Could not validate credential: error")
 }
 
 async function testSignatureKeyNotUnique(cipherSuite: CiphersuiteName) {

@@ -54,13 +54,17 @@ export {
   getOwnSignatureKeyPair,
   getOwnLeafNode,
   getGroupMembers,
+  getLeafNodeAt,
   type ClientState,
-  type SignatureKeyPair,
   type CreateGroupParams,
   type GroupState,
   type JoinGroupResult,
   type PublicGroupState,
 } from "./clientState.js"
+
+export { type SignatureKeyPair, generateSignatureKeyPair } from "./signatureKeyPair.js"
+
+export { type LeafNodePatch } from "./leafNodePatch.js"
 
 export {
   ValidationError,
@@ -98,6 +102,7 @@ export {
   processMessage,
   processPrivateMessage,
   processPublicMessage,
+  processKeyPackage,
   type NewStateWithActionTaken,
   type ProcessMessageResult,
 } from "./processMessages.js"
@@ -128,7 +133,12 @@ export { defaultCapabilities } from "./defaultCapabilities.js"
 
 export { type Capabilities } from "./capabilities.js"
 
-export { type AuthenticationService, unsafeTestingAuthenticationService } from "./authenticationService.js"
+export {
+  type AuthenticationResult,
+  type AuthenticationService,
+  type CredentialBatch,
+  unsafeTestingAuthenticationService,
+} from "./authenticationService.js"
 
 export { type ClientConfig } from "./clientConfig.js"
 
@@ -348,6 +358,8 @@ export {
   type CredentialCustom,
   type CredentialX509,
   type DefaultCredential,
+  credentialEncoder,
+  credentialDecoder,
   isDefaultCredential,
 } from "./credential.js"
 

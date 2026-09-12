@@ -1,4 +1,5 @@
-import { addHistoricalReceiverData, makePskIndex, throwIfDefined, validateRatchetTree } from "./clientState.js"
+import { addHistoricalReceiverData, makePskIndex } from "./clientState.js"
+import { throwIfDefined, validateRatchetTree } from "./validation.js"
 import { AuthenticatedContentCommit } from "./authenticatedContent.js"
 import {
   ClientState,
@@ -30,7 +31,7 @@ import {
 } from "./groupInfo.js"
 import { KeyPackage, makeKeyPackageRef, PrivateKeyPackage } from "./keyPackage.js"
 import { initializeEpoch, EpochSecrets } from "./keySchedule.js"
-import { MlsFramedMessage, MlsWelcomeMessage } from "./message.js"
+import { MlsFramedMessage, MlsPublicMessage, MlsWelcomeMessage } from "./message.js"
 import { protect } from "./messageProtection.js"
 import { protectPublicMessage } from "./messageProtectionPublic.js"
 import { getCommitSecret, pathToPathSecrets } from "./pathSecrets.js"
@@ -67,9 +68,9 @@ import { CryptoVerificationError, InternalError, UsageError, ValidationError } f
 import { ClientConfig, resolveClientConfig } from "./clientConfig.js"
 import { ExtensionExternalPub, extensionsSupportedByCapabilities, GroupInfoExtension } from "./extension.js"
 import { encode } from "./codec/tlsEncoder.js"
-import { PublicMessage } from "./publicMessage.js"
 import { wireformats } from "./wireformat.js"
 import { MlsContext } from "./mlsContext.js"
+import { LeafNodePatch } from "./leafNodePatch.js"
 
 /** @public */
 export interface CreateCommitResult {
@@ -86,6 +87,7 @@ export interface CreateCommitOptions {
   ratchetTreeExtension?: boolean
   groupInfoExtensions?: GroupInfoExtension[]
   authenticatedData?: Uint8Array
+  leafNodePatch?: LeafNodePatch
 }
 
 /** @public */
@@ -130,9 +132,11 @@ export async function createCommitInternal(
 
   if (res.additionalResult.kind === "externalCommit") throw new UsageError("Cannot create externalCommit as a member")
 
+  const needsUpdatePath = res.needsUpdatePath || options.leafNodePatch !== undefined
+
   const suspendedPendingReinit = res.additionalResult.kind === "reinit" ? res.additionalResult.reinit : undefined
 
-  const touchedLeaves: LeafIndex[] = res.needsUpdatePath
+  const touchedLeaves: LeafIndex[] = needsUpdatePath
     ? [...res.updatedLeaves, ...res.removedLeaves, toLeafIndex(state.privatePath.leafIndex)]
     : [...res.updatedLeaves, ...res.removedLeaves]
   const treeHashCache = deriveTreeHashCache(mutableTree.length, state.treeHashCache, touchedLeaves)
@@ -149,15 +153,18 @@ export async function createCommitInternal(
       ? res.additionalResult.addedLeafNodes.map(([leafIndex]) => leafToNodeIndex(leafIndex))
       : []
 
-  const [tree, updatePath, pathSecrets, newPrivateKey, precomputedTreeHash] = res.needsUpdatePath
+  const signKey = params.leafNodePatch?.signatureKeyPair?.signKey ?? state.signaturePrivateKey
+
+  const [tree, updatePath, pathSecrets, newPrivateKey, precomputedTreeHash] = needsUpdatePath
     ? await createUpdatePath(
         mutableTree,
         toLeafIndex(state.privatePath.leafIndex),
         groupContextWithExtensions,
-        state.signaturePrivateKey,
+        signKey,
         cipherSuite,
         treeHashCache,
         excludeNodes,
+        options.leafNodePatch,
       )
     : [mutableTree, undefined, [] as PathSecret[], undefined, undefined]
 
@@ -257,7 +264,7 @@ export async function createCommitInternal(
     unappliedProposals: {},
     historicalReceiverData,
     confirmationTag,
-    signaturePrivateKey: state.signaturePrivateKey,
+    signaturePrivateKey: signKey,
     groupActiveState,
     treeHashCache,
   }
@@ -548,7 +555,7 @@ export async function joinGroupExternal(params: {
   resync: boolean
   tree?: RatchetTree
   authenticatedData?: Uint8Array
-}): Promise<{ publicMessage: PublicMessage; newState: ClientState }> {
+}): Promise<{ commit: MlsPublicMessage; newState: ClientState }> {
   const context = params.context
   const groupInfo = params.groupInfo
   const keyPackage = params.keyPackage
@@ -600,7 +607,8 @@ export async function joinGroupExternal(params: {
 
   const credentialVerified = await authService.validateCredential(signerCredential, signaturePublicKey)
 
-  if (!credentialVerified) throw new ValidationError("Could not validate credential")
+  if (credentialVerified.kind === "error")
+    throw new ValidationError(`Could not validate credential: ${credentialVerified.error}`)
 
   const groupInfoSignatureVerified = await verifyGroupInfoSignature(groupInfo, signaturePublicKey, cs.signature)
 
@@ -629,6 +637,7 @@ export async function joinGroupExternal(params: {
     privateKeys.signaturePrivateKey,
     cs,
     externalTreeHashCache,
+    [],
   )
 
   const privateKeyPath = updateLeafKey(
@@ -715,7 +724,10 @@ export async function joinGroupExternal(params: {
   zeroOutUint8Array(initSecret)
   zeroOutUint8Array(epochSecrets.joinerSecret)
 
-  return { publicMessage: msg, newState: state }
+  return {
+    commit: { publicMessage: msg, wireformat: wireformats.mls_public_message, version: protocolVersions.mls10 },
+    newState: state,
+  }
 }
 function filterNewLeaves(resolution: NodeIndex[], excludeNodes: NodeIndex[]): NodeIndex[] {
   const set = new Set(excludeNodes)

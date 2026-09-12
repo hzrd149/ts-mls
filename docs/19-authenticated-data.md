@@ -27,14 +27,12 @@ import {
   createApplicationMessage,
   createProposal,
   processMessage,
-  processPrivateMessage,
-  processPublicMessage,
+  processKeyPackage,
   Credential,
   defaultCredentialTypes,
   getCiphersuiteImpl,
   generateKeyPackage,
   Proposal,
-  defaultProposalTypes,
   Capabilities,
   defaultCapabilities,
   protocolVersions,
@@ -89,7 +87,7 @@ let aliceGroup = await createGroup({
 const addBobCommitResult = await createCommit({
   context,
   state: aliceGroup,
-  extraProposals: [{ proposalType: defaultProposalTypes.add, add: { keyPackage: bob.publicPackage } }],
+  extraProposals: [await processKeyPackage({ context, state: aliceGroup, keyPackage: bob.publicPackage })],
 })
 
 aliceGroup = addBobCommitResult.newState
@@ -162,7 +160,7 @@ bobProcessPublicCommitResult.consumed.forEach(zeroOutUint8Array)
 ## Notes
 
 - **Not Encrypted**: AAD is visible to anyone who can see the message (it's not encrypted), but it cannot be modified without detection.
-- **Reading AAD**: When processing a message, the AAD is available in the result object's `aad` field (for both `processMessage`, `processPrivateMessage`, and `processPublicMessage`).
+- **Reading AAD**: When processing a message, the AAD is available in the result object's `aad` field (for `processMessage`, `processPrivateMessage`, and `processPublicMessage`).
 - **Private vs Public Messages**:
   - For private messages, AAD is included in the AEAD encryption operation
   - For public messages, AAD is included in the signature

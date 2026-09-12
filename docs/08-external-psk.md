@@ -28,9 +28,10 @@ import {
   defaultProposalTypes,
   getCiphersuiteImpl,
   createCommit,
+  processKeyPackage,
   Proposal,
   joinGroup,
-  processPrivateMessage,
+  processMessage,
   bytesToBase64,
   pskTypes,
   unsafeTestingAuthenticationService,
@@ -71,10 +72,7 @@ const bobCredential: Credential = {
 const bob = await generateKeyPackage({ credential: bobCredential, cipherSuite: impl })
 
 // Alice adds Bob (epoch 1)
-const addBobProposal: Proposal = {
-  proposalType: defaultProposalTypes.add,
-  add: { keyPackage: bob.publicPackage },
-}
+const addBobProposal: Proposal = await processKeyPackage({ context, state: aliceGroup, keyPackage: bob.publicPackage })
 const addBobCommitResult = await createCommit({
   context,
   state: aliceGroup,
@@ -112,13 +110,11 @@ const pskCommitResult = await createCommit({
 aliceGroup = pskCommitResult.newState
 pskCommitResult.consumed.forEach(zeroOutUint8Array)
 
-if (pskCommitResult.commit.wireformat !== wireformats.mls_private_message) throw new Error("Expected private message")
-
 // Bob processes the commit using the PSK
-const processPskResult = await processPrivateMessage({
+const processPskResult = await processMessage({
   context,
   state: bobGroup,
-  privateMessage: pskCommitResult.commit.privateMessage,
+  message: pskCommitResult.commit,
 })
 bobGroup = processPskResult.newState
 processPskResult.consumed.forEach(zeroOutUint8Array)
@@ -162,9 +158,9 @@ import {
   defaultProposalTypes,
   getCiphersuiteImpl,
   createCommit,
+  processKeyPackage,
   Proposal,
   joinGroup,
-  processPrivateMessage,
   bytesToBase64,
   pskTypes,
   unsafeTestingAuthenticationService,
@@ -218,10 +214,7 @@ const pskProposal: Proposal = {
 }
 
 // Add Bob and use PSK in the same commit (epoch 1)
-const addBobProposal: Proposal = {
-  proposalType: defaultProposalTypes.add,
-  add: { keyPackage: bob.publicPackage },
-}
+const addBobProposal: Proposal = await processKeyPackage({ context, state: aliceGroup, keyPackage: bob.publicPackage })
 const commitResult = await createCommit({
   context,
   state: aliceGroup,

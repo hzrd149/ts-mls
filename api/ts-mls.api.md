@@ -48,9 +48,25 @@ export const appDataUpdateOperations: {
 export const appDataUpdateProposalType = 8;
 
 // @public (undocumented)
+export type AuthenticationResult = {
+    kind: "ok";
+} | {
+    kind: "error";
+    error: string;
+};
+
+// @public (undocumented)
 export interface AuthenticationService {
     // (undocumented)
-    validateCredential(credential: Credential_2, signaturePublicKey: Uint8Array): Promise<boolean>;
+    batchSize: number;
+    // (undocumented)
+    maxConcurrency: number;
+    // (undocumented)
+    validateCredential(credential: Credential_2, signaturePublicKey: Uint8Array): Promise<AuthenticationResult>;
+    // (undocumented)
+    validateCredentialBatch(batch: CredentialBatch[]): Promise<AuthenticationResult>;
+    // (undocumented)
+    validateSuccessorCredential(oldCredential: Credential_2, newCredential: Credential_2): Promise<AuthenticationResult>;
 }
 
 // @public (undocumented)
@@ -223,6 +239,8 @@ export interface CreateCommitOptions {
     // (undocumented)
     groupInfoExtensions?: GroupInfoExtension[];
     // (undocumented)
+    leafNodePatch?: LeafNodePatch;
+    // (undocumented)
     ratchetTreeExtension?: boolean;
     // (undocumented)
     wireAsPublicMessage?: boolean;
@@ -290,13 +308,20 @@ export function createProposal(params: {
     authenticatedData?: Uint8Array;
 }): Promise<CreateMessageResult>;
 
+// @public
+export function createSelfRemoveProposal(params: {
+    context: MlsContext;
+    state: ClientState;
+    authenticatedData?: Uint8Array;
+}): Promise<CreateMessageResult>;
+
 // @public (undocumented)
 export function createUpdateProposal(params: {
     context: MlsContext;
     state: ClientState;
     wireAsPublicMessage?: boolean;
     authenticatedData?: Uint8Array;
-    leafNodeExtensions?: LeafNodeExtension[];
+    leafNodePatch?: LeafNodePatch;
 }): Promise<CreateUpdateProposalResult>;
 
 // @public (undocumented)
@@ -320,12 +345,26 @@ export interface CredentialBasic {
 }
 
 // @public (undocumented)
+export interface CredentialBatch {
+    // (undocumented)
+    credential: Credential_2;
+    // (undocumented)
+    signaturePublicKey: Uint8Array;
+}
+
+// @public (undocumented)
 export interface CredentialCustom {
     // (undocumented)
     credentialType: number;
     // (undocumented)
     data: Uint8Array;
 }
+
+// @public (undocumented)
+export const credentialDecoder: Decoder<Credential_2>;
+
+// @public (undocumented)
+export const credentialEncoder: Encoder<Credential_2>;
 
 // @public (undocumented)
 export interface CredentialX509 {
@@ -637,11 +676,11 @@ export interface GenerateKeyPackageWithKeyParams {
     // (undocumented)
     lifetime?: Lifetime;
     // (undocumented)
-    signatureKeyPair: {
-        signKey: Uint8Array;
-        publicKey: Uint8Array;
-    };
+    signatureKeyPair: SignatureKeyPair;
 }
+
+// @public (undocumented)
+export function generateSignatureKeyPair(cipherSuite: CiphersuiteImpl): Promise<SignatureKeyPair>;
 
 // @public (undocumented)
 export interface GenerationSecret {
@@ -664,6 +703,9 @@ export function getCredentialFromLeafIndex(ratchetTree: RatchetTree, leafIndex: 
 
 // @public (undocumented)
 export function getGroupMembers(state: ClientState): LeafNode[];
+
+// @public (undocumented)
+export function getLeafNodeAt(state: ClientState, leafIndex: number): LeafNode;
 
 // @public (undocumented)
 export function getOwnLeafNode(state: ClientState): LeafNode;
@@ -880,6 +922,9 @@ export function isDefaultExtension(e: Extension): e is DefaultExtension;
 export function isDefaultProposal(p: Proposal): p is DefaultProposal;
 
 // @public (undocumented)
+export function isSelfRemoveProposal(p: Proposal): p is ProposalSelfRemove;
+
+// @public (undocumented)
 export function joinGroup(params: {
     context: MlsContext;
     welcome: Welcome;
@@ -898,7 +943,7 @@ export function joinGroupExternal(params: {
     tree?: RatchetTree;
     authenticatedData?: Uint8Array;
 }): Promise<{
-    publicMessage: PublicMessage;
+    commit: MlsPublicMessage;
     newState: ClientState;
 }>;
 
@@ -1079,6 +1124,18 @@ export type LeafNodeKeyPackage = LeafNode & {
 };
 
 // @public (undocumented)
+export interface LeafNodePatch {
+    // (undocumented)
+    capabilities?: Capabilities;
+    // (undocumented)
+    credential?: Credential_2;
+    // (undocumented)
+    extensions?: LeafNodeExtension[];
+    // (undocumented)
+    signatureKeyPair?: SignatureKeyPair;
+}
+
+// @public (undocumented)
 export type LeafNodeSourceName = keyof typeof leafNodeSources;
 
 // @public (undocumented)
@@ -1216,6 +1273,8 @@ export interface NewStateWithActionTaken {
     consumed: Uint8Array[];
     // (undocumented)
     newState: ClientState;
+    // (undocumented)
+    sender: Sender;
 }
 
 // @public (undocumented)
@@ -1309,6 +1368,13 @@ export interface PrivateMessage {
 }
 
 // @public (undocumented)
+export function processKeyPackage(params: {
+    context: MlsContext;
+    state: ClientState;
+    keyPackage: KeyPackage;
+}): Promise<ProposalAdd>;
+
+// @public (undocumented)
 export function processMessage(params: {
     context: MlsContext;
     state: ClientState;
@@ -1323,12 +1389,14 @@ export type ProcessMessageResult = {
     actionTaken: IncomingMessageAction;
     consumed: Uint8Array[];
     aad: Uint8Array;
+    senderLeafIndex: number | undefined;
 } | {
     kind: "applicationMessage";
     message: Uint8Array;
     newState: ClientState;
     consumed: Uint8Array[];
     aad: Uint8Array;
+    senderLeafIndex: number;
 };
 
 // @public
@@ -1348,7 +1416,7 @@ export function processPublicMessage(params: {
 }): Promise<NewStateWithActionTaken>;
 
 // @public (undocumented)
-export type Proposal = DefaultProposal | ProposalAppDataUpdate | ProposalCustom;
+export type Proposal = DefaultProposal | ProposalAppDataUpdate | ProposalSelfRemove | ProposalCustom;
 
 // @public (undocumented)
 export interface ProposalAdd {
@@ -1437,6 +1505,12 @@ export interface ProposalRemove {
     proposalType: typeof defaultProposalTypes.remove;
     // (undocumented)
     remove: Remove;
+}
+
+// @public
+export interface ProposalSelfRemove {
+    // (undocumented)
+    proposalType: typeof selfRemoveProposalType;
 }
 
 // @public (undocumented)
@@ -1646,6 +1720,9 @@ export interface SecretTreeNode {
     // (undocumented)
     handshake: GenerationSecret;
 }
+
+// @public
+export const selfRemoveProposalType = 10;
 
 // @public (undocumented)
 export type Sender = SenderMember | SenderNonMember;
