@@ -84,7 +84,7 @@ async function customGroupInfoExtensionTest(cipherSuite: CiphersuiteName) {
 
   aliceGroup = addBobCommitResult.newState
 
-  const { state: bobGroup, groupInfoExtensions } = await joinGroupWithExtensions({
+  const { state: bobGroup, groupInfoExtensions, groupInfo } = await joinGroupWithExtensions({
     context: {
       cipherSuite: impl,
       authService: unsafeTestingAuthenticationService,
@@ -96,6 +96,10 @@ async function customGroupInfoExtensionTest(cipherSuite: CiphersuiteName) {
   })
 
   expect(groupInfoExtensions.find((e) => e.extensionType === customExtensionType)).toStrictEqual(customExtension)
+  expect(groupInfo?.signer).toBe(0)
+  expect(groupInfo?.signer).not.toBe(bobGroup.privatePath.leafIndex)
+  expect(groupInfo?.signature.length).toBeGreaterThan(0)
+  expect(groupInfo?.extensions).toStrictEqual(groupInfoExtensions)
 
   // groupContext should not include the extension
   expect(bobGroup.groupContext.extensions.length).toStrictEqual(0)
