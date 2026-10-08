@@ -231,7 +231,7 @@ export { nodeTypes } from "./nodeType.js"
 
 export { leafNodeSources, type LeafNodeSourceName, type LeafNodeSourceValue } from "./leafNodeSource.js"
 
-export { type LeafIndex } from "./treemath.js"
+export { type LeafIndex, leafToNodeIndex } from "./treemath.js"
 
 export {
   type Node,

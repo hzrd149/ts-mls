@@ -11,7 +11,7 @@ import {
 } from "./extension.js"
 import { createConfirmationTag, FramedContentCommit } from "./framedContent.js"
 import { groupContextDecoder, GroupContext, groupContextEncoder } from "./groupContext.js"
-import { ratchetTreeFromExtension, verifyGroupInfoConfirmationTag, verifyGroupInfoSignature } from "./groupInfo.js"
+import { GroupInfo, ratchetTreeFromExtension, verifyGroupInfoConfirmationTag, verifyGroupInfoSignature } from "./groupInfo.js"
 import { KeyPackage, makeKeyPackageRef, PrivateKeyPackage, verifyKeyPackage } from "./keyPackage.js"
 import {
   keyScheduleDecoder,
@@ -1116,6 +1116,8 @@ export async function joinGroup(params: {
 export interface JoinGroupResult {
   state: ClientState
   groupInfoExtensions: GroupInfoExtension[]
+  /** Decrypted GroupInfo, exposed only after signature, tree, and confirmation validation. */
+  groupInfo: GroupInfo
 }
 
 export async function joinGroupInternal(params: {
@@ -1283,6 +1285,7 @@ export async function joinGroupInternal(params: {
       treeHashCache,
     },
     groupInfoExtensions: gi.extensions,
+    groupInfo: gi,
   }
 }
 
