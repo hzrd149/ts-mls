@@ -110,6 +110,12 @@ export interface PrivateKeyPackage {
 }
 
 /** @public */
+export interface KeyPackageWithPrivateKey {
+  publicPackage: KeyPackage
+  privatePackage: PrivateKeyPackage
+}
+
+/** @public */
 export const privateKeyPackageEncoder: Encoder<PrivateKeyPackage> = contramapBufferEncoders(
   [varLenDataEncoder, varLenDataEncoder, varLenDataEncoder],
   (pkp) => [pkp.initPrivateKey, pkp.hpkePrivateKey, pkp.signaturePrivateKey] as const,
@@ -135,7 +141,7 @@ export interface GenerateKeyPackageWithKeyParams {
 /** @public */
 export async function generateKeyPackageWithKey(
   params: GenerateKeyPackageWithKeyParams,
-): Promise<{ publicPackage: KeyPackage; privatePackage: PrivateKeyPackage }> {
+): Promise<KeyPackageWithPrivateKey> {
   const { credential, signatureKeyPair, cipherSuite, leafNodeExtensions } = params
   const capabilities = params.capabilities ?? defaultCapabilities()
   const lifetime = params.lifetime ?? defaultLifetime()
@@ -182,9 +188,7 @@ export interface GenerateKeyPackageParams {
 }
 
 /** @public */
-export async function generateKeyPackage(
-  params: GenerateKeyPackageParams,
-): Promise<{ publicPackage: KeyPackage; privatePackage: PrivateKeyPackage }> {
+export async function generateKeyPackage(params: GenerateKeyPackageParams): Promise<KeyPackageWithPrivateKey> {
   const { credential, cipherSuite, leafNodeExtensions, capabilities, lifetime } = params
   const extensions = params.extensions ?? []
   const sigKeys = await cipherSuite.signature.keygen()

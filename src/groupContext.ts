@@ -19,6 +19,7 @@ export interface GroupContext {
   extensions: GroupContextExtension[]
 }
 
+/** @public */
 export const groupContextEncoder: Encoder<GroupContext> = contramapBufferEncoders(
   [
     protocolVersionEncoder,

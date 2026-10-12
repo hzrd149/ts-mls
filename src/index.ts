@@ -166,7 +166,7 @@ export {
   bytesToArrayBuffer,
 } from "./util/byteArray.js"
 
-export { type GroupContext } from "./groupContext.js"
+export { groupContextEncoder, type GroupContext } from "./groupContext.js"
 
 export { type GroupInfo, type GroupInfoTBS } from "./groupInfo.js"
 
@@ -241,7 +241,7 @@ export { nodeTypes } from "./nodeType.js"
 
 export { leafNodeSources, type LeafNodeSourceName, type LeafNodeSourceValue } from "./leafNodeSource.js"
 
-export { type LeafIndex } from "./treemath.js"
+export { leafToNodeIndex, type LeafIndex, type NodeIndex } from "./treemath.js"
 
 export {
   type Node,
@@ -271,6 +271,7 @@ export {
   type KeyPackage,
   type KeyPackageTBS,
   type PrivateKeyPackage,
+  type KeyPackageWithPrivateKey,
   type GenerateKeyPackageParams,
   type GenerateKeyPackageWithKeyParams,
   privateKeyPackageEncoder,

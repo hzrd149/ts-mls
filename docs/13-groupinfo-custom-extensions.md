@@ -118,6 +118,17 @@ const bobGroup = await joinGroup({
 const foundExtension = bobGroup.groupContext.extensions.find((e) => e.extensionType === customExtensionType)
 ```
 
+## Inspecting the Welcome signer
+
+`joinGroupWithExtensions` returns the full decrypted and validated `groupInfo` alongside
+`state` and `groupInfoExtensions`. Its `signer` is a leaf index; use the public
+`leafToNodeIndex` helper to locate that leaf in `state.ratchetTree`. The public
+`groupContextEncoder` can encode `groupInfo.groupContext` for application-level
+validation.
+
+`generateKeyPackage` and `generateKeyPackageWithKey` return `KeyPackageWithPrivateKey`,
+a public type containing `publicPackage` and `privatePackage`.
+
 ## Notes
 
 - Custom extension types should be chosen from the application-specific range (0xF000-0xFFFF) to avoid conflicts with standard or future standard MLS extensions.

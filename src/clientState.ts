@@ -10,7 +10,12 @@ import {
 } from "./extension.js"
 import { createConfirmationTag, FramedContentCommit } from "./framedContent.js"
 import { groupContextDecoder, GroupContext, groupContextEncoder } from "./groupContext.js"
-import { ratchetTreeFromExtension, verifyGroupInfoConfirmationTag, verifyGroupInfoSignature } from "./groupInfo.js"
+import {
+  GroupInfo,
+  ratchetTreeFromExtension,
+  verifyGroupInfoConfirmationTag,
+  verifyGroupInfoSignature,
+} from "./groupInfo.js"
 import { KeyPackage, makeKeyPackageRef, PrivateKeyPackage } from "./keyPackage.js"
 import {
   keyScheduleDecoder,
@@ -607,6 +612,8 @@ export async function joinGroup(params: {
 
 /** @public */
 export interface JoinGroupResult {
+  /** The decrypted GroupInfo after signature, tree, and confirmation tag validation. */
+  groupInfo: GroupInfo
   state: ClientState
   groupInfoExtensions: GroupInfoExtension[]
 }
@@ -776,6 +783,7 @@ export async function joinGroupInternal(params: {
       groupActiveState: { kind: "active" },
       treeHashCache,
     },
+    groupInfo: gi,
     groupInfoExtensions: gi.extensions,
   }
 }

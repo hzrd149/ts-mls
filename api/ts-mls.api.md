@@ -634,10 +634,7 @@ export interface FramedContentProposalData {
 }
 
 // @public (undocumented)
-export function generateKeyPackage(params: GenerateKeyPackageParams): Promise<{
-    publicPackage: KeyPackage;
-    privatePackage: PrivateKeyPackage;
-}>;
+export function generateKeyPackage(params: GenerateKeyPackageParams): Promise<KeyPackageWithPrivateKey>;
 
 // @public (undocumented)
 export interface GenerateKeyPackageParams {
@@ -656,10 +653,7 @@ export interface GenerateKeyPackageParams {
 }
 
 // @public (undocumented)
-export function generateKeyPackageWithKey(params: GenerateKeyPackageWithKeyParams): Promise<{
-    publicPackage: KeyPackage;
-    privatePackage: PrivateKeyPackage;
-}>;
+export function generateKeyPackageWithKey(params: GenerateKeyPackageWithKeyParams): Promise<KeyPackageWithPrivateKey>;
 
 // @public (undocumented)
 export interface GenerateKeyPackageWithKeyParams {
@@ -755,6 +749,9 @@ export interface GroupContext {
     // (undocumented)
     version: ProtocolVersionValue;
 }
+
+// @public (undocumented)
+export const groupContextEncoder: Encoder<GroupContext>;
 
 // @public (undocumented)
 export type GroupContextExtension = ExtensionRequiredCapabilities | ExtensionExternalSenders | CustomExtension;
@@ -970,6 +967,7 @@ export function joinGroupFromReinit(params: {
 
 // @public (undocumented)
 export interface JoinGroupResult {
+    groupInfo: GroupInfo;
     // (undocumented)
     groupInfoExtensions: GroupInfoExtension[];
     // (undocumented)
@@ -1028,6 +1026,14 @@ export type KeyPackageTBS = {
     leafNode: LeafNodeKeyPackage;
     extensions: CustomExtension[];
 };
+
+// @public (undocumented)
+export interface KeyPackageWithPrivateKey {
+    // (undocumented)
+    privatePackage: PrivateKeyPackage;
+    // (undocumented)
+    publicPackage: KeyPackage;
+}
 
 // @public (undocumented)
 export interface KeyRetentionConfig {
@@ -1152,6 +1158,9 @@ export type LeafNodeSourceValue = (typeof leafNodeSources)[LeafNodeSourceName];
 export type LeafNodeUpdate = LeafNode & {
     leafNodeSource: typeof leafNodeSources.update;
 };
+
+// @public (undocumented)
+export function leafToNodeIndex(leafIndex: LeafIndex): NodeIndex;
 
 // @public (undocumented)
 export interface Lifetime {
@@ -1283,6 +1292,9 @@ export const nobleCryptoProvider: CryptoProvider;
 // @public (undocumented)
 type Node_2 = NodeParent | NodeLeaf;
 export { Node_2 as Node }
+
+// @public (undocumented)
+export type NodeIndex = Brand<number, "NodeIndex">;
 
 // @public (undocumented)
 export type NodeLeaf = {

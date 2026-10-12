@@ -40,6 +40,7 @@ export function isLeaf(nodeIndex: NodeIndex) {
   return nodeIndex % 2 == 0
 }
 
+/** @public */
 export function leafToNodeIndex(leafIndex: LeafIndex): NodeIndex {
   return toNodeIndex(leafIndex * 2)
 }
