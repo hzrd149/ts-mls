@@ -60,6 +60,10 @@ describe("ProposalWithSender roundtrip", () => {
     roundtrip(dummyAddProposal)
   })
 
+  test("roundtrips add with sender at leaf 0", () => {
+    roundtrip({ ...dummyAddProposal, senderLeafIndex: 0 })
+  })
+
   test("roundtrips remove without sender", () => {
     roundtrip(dummyRemoveProposal)
   })

@@ -14,6 +14,14 @@ test("optional codec should return single 0 byte", () => {
   expect(e3).toStrictEqual(new Uint8Array([0]))
 })
 
+test("optional codec roundtrip uint8: 0", () => {
+  optionalRoundTrip(0, uint8Encoder, uint8Decoder)
+})
+
+test("optional codec roundtrip uint64: 0", () => {
+  optionalRoundTrip(0n, uint64Encoder, uint64Decoder)
+})
+
 test("optional codec roundtrip uint8: 255", () => {
   optionalRoundTrip(255, uint8Encoder, uint8Decoder)
 })
